@@ -86,7 +86,18 @@ export async function scanProject(options: ScannerOptions): Promise<ScannedFile[
     onlyFiles: true,
     unique: true,
     followSymbolicLinks: false,
-    ignore: ["node_modules/**", ".git/**", "dist/**"],
+    ignore: [
+      "node_modules/**",
+      ".git/**",
+      "dist/**",
+      "package-lock.json",
+      "yarn.lock",
+      "pnpm-lock.yaml",
+      "bun.lockb",
+      "**/*.svg",
+      "**/*.png",
+      "**/*.jpg",
+    ],
   });
 
   const files: ScannedFile[] = [];

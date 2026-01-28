@@ -1,6 +1,6 @@
 {
   "name": "epistle",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Epistle – a production-grade Node.js CLI that packs a local codebase into a single, LLM-friendly context file.",
   "private": false,
   "bin": {
@@ -16,6 +16,11 @@
     "node": ">=18.0.0"
   },
   "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "chalk": "^5.3.0",
     "clipboardy": "^4.0.0",

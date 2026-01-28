@@ -29,7 +29,7 @@ async function main() {
       'Output format: "markdown" (default) or "xml"',
       "markdown",
     )
-    .version("0.1.0");
+    .version("0.1.2");
 
   program.parse(process.argv);
   const opts = program.opts<{
@@ -60,9 +60,20 @@ async function main() {
   }).start();
 
   try {
+    const excludeGlobs: string[] = [...(opts.exclude ?? [])];
+
+    const outputPath = opts.output
+      ? path.resolve(rootDir, opts.output)
+      : undefined;
+
+    if (outputPath) {
+      const outputRel = path.relative(rootDir, outputPath) || outputPath;
+      excludeGlobs.push(outputRel);
+    }
+
     const files = await scanProject({
       rootDir,
-      excludeGlobs: opts.exclude,
+      excludeGlobs,
     });
 
     spinner.text = chalk.cyan("Formatting output...");
@@ -71,10 +82,6 @@ async function main() {
       format,
       rootDir,
     });
-
-    const outputPath = opts.output
-      ? path.resolve(rootDir, opts.output)
-      : undefined;
 
     if (outputPath) {
       await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -103,6 +110,11 @@ async function main() {
         `Packed ${files.length} files` +
           (outputPath ? ` into ${outputPath}` : " to stdout") +
           `.`,
+      ),
+    );
+    console.error(
+      chalk.dim(
+        "Tip: Add your output file to .gitignore to keep your repo clean.",
       ),
     );
   } catch (err) {
