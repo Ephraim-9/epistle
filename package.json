@@ -2,7 +2,7 @@
   "name": "epistle",
   "version": "0.1.0",
   "description": "Epistle – a production-grade Node.js CLI that packs a local codebase into a single, LLM-friendly context file.",
-  "private": true,
+  "private": false,
   "bin": {
     "epistle": "dist/bin.js"
   },
