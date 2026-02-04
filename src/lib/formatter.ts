@@ -19,6 +19,13 @@ interface TreeNode {
   file?: ScannedFile;
 }
 
+export interface FileTokenStat {
+  path: string;
+  tokens: number;
+}
+
+export type DirectoryTokenMap = Map<string, number>;
+
 function buildTree(files: ScannedFile[]): TreeNode {
   const root: TreeNode = { name: "", children: new Map() };
 
@@ -151,21 +158,68 @@ function getPersonaHeader(type: PersonaType): string {
   }
 }
 
+function computeFileTokenStats(
+  files: ScannedFile[],
+  redactedByPath: Map<string, string>,
+): { fileTokenStats: FileTokenStat[]; totalTokens: number } {
+  const encoding = encodingForModel("gpt-4o-mini");
+  const stats: FileTokenStat[] = [];
+  let totalTokens = 0;
+
+  for (const file of files) {
+    if (!file.content || file.isBinary || file.isOversized) {
+      stats.push({ path: file.path, tokens: 0 });
+      continue;
+    }
+
+    const contentForTokens = redactedByPath.get(file.path) ?? file.content;
+    const tokens = encoding.encode(contentForTokens).length;
+    stats.push({ path: file.path, tokens });
+    totalTokens += tokens;
+  }
+
+  return { fileTokenStats: stats, totalTokens };
+}
+
+export function aggregateDirectoryTokens(
+  fileTokenStats: FileTokenStat[],
+): DirectoryTokenMap {
+  const dirMap: DirectoryTokenMap = new Map();
+
+  for (const stat of fileTokenStats) {
+    if (stat.tokens <= 0) continue;
+
+    const segments = stat.path.split("/").filter(Boolean);
+    // Aggregate into all ancestor directories (root is implicitly total)
+    for (let i = 0; i < segments.length - 1; i++) {
+      const dirPath = segments.slice(0, i + 1).join("/");
+      dirMap.set(dirPath, (dirMap.get(dirPath) ?? 0) + stat.tokens);
+    }
+  }
+
+  // Optionally keep a synthetic root entry with the total of all tokens.
+  const rootTotal = Array.from(fileTokenStats).reduce(
+    (sum, stat) => sum + stat.tokens,
+    0,
+  );
+  dirMap.set("", rootTotal);
+
+  return dirMap;
+}
+
 export function formatOutput(
   files: ScannedFile[],
   options: FormatOptions,
-): { output: string; totalTokens: number } {
+): {
+  output: string;
+  totalTokens: number;
+  fileTokenStats: FileTokenStat[];
+  dirTokenMap: DirectoryTokenMap;
+} {
   const sortedFiles = [...files].sort((a, b) => a.path.localeCompare(b.path));
 
   const tree = buildTree(sortedFiles);
   const treeText = renderTree(tree);
-
-  const encoding = encodingForModel("gpt-4o-mini");
-  const joinedContent = sortedFiles
-    .map((f) => f.content ?? "")
-    .filter((s) => s.length > 0)
-    .join("\n");
-  const totalTokens = encoding.encode(joinedContent).length;
 
   const totalFiles = sortedFiles.length;
 
@@ -227,6 +281,12 @@ export function formatOutput(
     return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
   }
 
+  const { fileTokenStats, totalTokens } = computeFileTokenStats(
+    sortedFiles,
+    redactedByPath,
+  );
+  const dirTokenMap = aggregateDirectoryTokens(fileTokenStats);
+
   const headerLines: string[] = [];
   if (options.persona) {
     headerLines.push(getPersonaHeader(options.persona));
@@ -287,7 +347,7 @@ export function formatOutput(
     }
 
     parts.push("</epistle>");
-    return { output: parts.join("\n"), totalTokens };
+    return { output: parts.join("\n"), totalTokens, fileTokenStats, dirTokenMap };
   }
 
   // Markdown format (default)
@@ -351,6 +411,6 @@ export function formatOutput(
     mdParts.push("");
   }
 
-  return { output: mdParts.join("\n"), totalTokens };
+  return { output: mdParts.join("\n"), totalTokens, fileTokenStats, dirTokenMap };
 }
 

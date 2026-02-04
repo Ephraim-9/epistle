@@ -10,11 +10,21 @@ import gradient from "gradient-string";
 import { scanProject } from "./lib/scanner.js";
 import {
   formatOutput,
+  type DirectoryTokenMap,
+  type FileTokenStat,
   type OutputFormat,
   type PersonaType,
 } from "./lib/formatter.js";
 
 const TOKEN_BUDGET_WARNING = 50000;
+
+type HogMode = "files" | "dirs" | "auto";
+
+interface HogEntry {
+  path: string;
+  tokens: number;
+  isDir: boolean;
+}
 
 const PERSONA_ALIASES: Record<string, PersonaType> = {
   arch: "architect",
@@ -76,7 +86,11 @@ async function main() {
       "-l, --lite",
       "Enable lite mode: auto-prune heavy assets and data files",
     )
-    .version("0.2.4");
+    .option(
+      "--hog-depth <value>",
+      "Depth for context hog report: 0 (files), >0 (directories), or 'auto'",
+    )
+    .version("0.3.0");
 
   program.parse(process.argv);
   const opts = program.opts<{
@@ -90,6 +104,7 @@ async function main() {
     stdout?: boolean;
     task?: string;
     lite?: boolean;
+    hogDepth?: string;
   }>();
 
   const format = (opts.format ?? "markdown").toLowerCase() as OutputFormat;
@@ -210,12 +225,15 @@ async function main() {
 
     spinner.text = chalk.cyan("Formatting output...");
 
-    const { output, totalTokens } = formatOutput(files, {
+    const { output, totalTokens, fileTokenStats, dirTokenMap } = formatOutput(
+      files,
+      {
       format,
       rootDir,
       persona,
       task: opts.task,
-    });
+      },
+    );
 
     if (totalTokens > TOKEN_BUDGET_WARNING) {
       console.error(
@@ -264,6 +282,32 @@ async function main() {
       ),
     );
 
+    // Determine hog mode and entries (based on already-pruned files list)
+    const { hogMode, hogDepth, hogEntries } = computeHogsForProject({
+      fileTokenStats,
+      dirTokenMap,
+      totalTokens,
+      hogDepthRaw: opts.hogDepth,
+    });
+
+    if (hogEntries.length > 0) {
+      console.error("");
+      console.error(chalk.cyan("Top Context Hogs"));
+      console.error(
+        chalk.dim(
+          hogMode === "files"
+            ? "Mode: files (top 5 largest files by tokens)"
+            : hogMode === "dirs"
+              ? `Mode: directories at depth ${hogDepth} (top 5 by tokens)`
+              : "Mode: auto (top 3 files + top 2 directories)",
+        ),
+      );
+      for (const entry of hogEntries) {
+        console.error(formatHogEntry(entry, totalTokens));
+      }
+      console.error("");
+    }
+
     // Dashboard summary box (stderr)
     let projectName: string = path.basename(rootDir);
     try {
@@ -305,6 +349,13 @@ async function main() {
     const modeLabel = opts.lite ? chalk.green("Lite") : "Full";
     lines.push(`Mode: ${modeLabel}`);
     lines.push(statsLine);
+    if (hogEntries.length > 0) {
+      lines.push("Top Context Hogs:");
+      const maxDashboardEntries = 5;
+      for (const entry of hogEntries.slice(0, maxDashboardEntries)) {
+        lines.push(formatHogEntry(entry, totalTokens));
+      }
+    }
     lines.push(`Task: ${taskPreview}`);
 
     const contentWidth = lines.reduce(
@@ -332,6 +383,133 @@ async function main() {
     console.error(chalk.red((err as Error).message));
     process.exit(1);
   }
+}
+
+function parseHogDepth(raw?: string): { mode: HogMode; depth?: number } {
+  if (!raw || raw.trim().length === 0 || raw === "0") {
+    return { mode: "files" };
+  }
+
+  if (raw.toLowerCase() === "auto") {
+    return { mode: "auto" };
+  }
+
+  const n = Number(raw);
+  if (!Number.isNaN(n) && n > 0 && Number.isFinite(n)) {
+    return { mode: "dirs", depth: Math.floor(n) };
+  }
+
+  console.error(
+    chalk.yellow(
+      `Warning: Invalid --hog-depth value "${raw}". Falling back to file-based hog report.`,
+    ),
+  );
+  return { mode: "files" };
+}
+
+function getDirDepth(pathStr: string): number {
+  if (!pathStr) return 0;
+  return pathStr.split("/").filter(Boolean).length;
+}
+
+function computeTopFileHogs(
+  fileTokenStats: FileTokenStat[],
+  limit: number,
+): HogEntry[] {
+  return fileTokenStats
+    .filter((s) => s.tokens > 0)
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, limit)
+    .map((s) => ({
+      path: s.path,
+      tokens: s.tokens,
+      isDir: false,
+    }));
+}
+
+function computeTopDirHogs(
+  dirTokenMap: DirectoryTokenMap,
+  depth: number,
+  limit: number,
+): HogEntry[] {
+  const entries: HogEntry[] = [];
+
+  for (const [dirPath, tokens] of dirTokenMap.entries()) {
+    if (dirPath === "") continue; // Skip synthetic root
+    if (tokens <= 0) continue;
+    if (getDirDepth(dirPath) !== depth) continue;
+
+    entries.push({
+      path: dirPath + "/",
+      tokens,
+      isDir: true,
+    });
+  }
+
+  return entries.sort((a, b) => b.tokens - a.tokens).slice(0, limit);
+}
+
+function computeAutoDirDepth(dirTokenMap: DirectoryTokenMap): number | undefined {
+  const depths = new Set<number>();
+  for (const [dirPath, tokens] of dirTokenMap.entries()) {
+    if (dirPath === "") continue;
+    if (tokens <= 0) continue;
+    depths.add(getDirDepth(dirPath));
+  }
+  if (depths.size === 0) return undefined;
+  return Math.min(...depths);
+}
+
+function computeHogsForProject(input: {
+  fileTokenStats: FileTokenStat[];
+  dirTokenMap: DirectoryTokenMap;
+  totalTokens: number;
+  hogDepthRaw?: string;
+}): { hogMode: HogMode; hogDepth?: number; hogEntries: HogEntry[] } {
+  const { mode, depth } = parseHogDepth(input.hogDepthRaw);
+  const hogMode: HogMode = mode;
+  const hogEntries: HogEntry[] = [];
+
+  if (input.totalTokens <= 0) {
+    return { hogMode, hogDepth: depth, hogEntries };
+  }
+
+  if (hogMode === "files") {
+    hogEntries.push(...computeTopFileHogs(input.fileTokenStats, 5));
+    return { hogMode, hogDepth: 0, hogEntries };
+  }
+
+  if (hogMode === "dirs") {
+    const d = depth ?? 1;
+    hogEntries.push(
+      ...computeTopDirHogs(input.dirTokenMap, d, 5),
+    );
+    return { hogMode, hogDepth: d, hogEntries };
+  }
+
+  // auto: mix of files and directories
+  const topFiles = computeTopFileHogs(input.fileTokenStats, 3);
+  const autoDepth =
+    depth ?? computeAutoDirDepth(input.dirTokenMap) ?? 1;
+  const topDirs = computeTopDirHogs(input.dirTokenMap, autoDepth, 2);
+
+  hogEntries.push(...topFiles, ...topDirs);
+  return { hogMode, hogDepth: autoDepth, hogEntries };
+}
+
+function formatHogEntry(entry: HogEntry, totalTokens: number): string {
+  const icon = entry.isDir ? "📁" : "📄";
+  const pct =
+    totalTokens > 0 ? (entry.tokens / totalTokens) * 100 : 0;
+  let pctLabel = `${pct.toFixed(1)}%`;
+
+  if (pct > 20) {
+    pctLabel = chalk.red(pctLabel);
+  } else if (pct > 10) {
+    pctLabel = chalk.yellow(pctLabel);
+  }
+
+  return `${icon} ${entry.path} - ${entry.tokens} (${pctLabel})`;
 }
 
 void main();
