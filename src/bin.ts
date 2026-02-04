@@ -16,6 +16,26 @@ import {
 
 const TOKEN_BUDGET_WARNING = 50000;
 
+const PERSONA_ALIASES: Record<string, PersonaType> = {
+  arch: "architect",
+  sec: "security",
+  ref: "refactor",
+};
+
+function resolvePersona(raw: string): PersonaType | undefined {
+  const key = raw.toLowerCase();
+  return PERSONA_ALIASES[key] ?? (key as PersonaType);
+}
+
+function personaToDefaultSlug(persona: PersonaType): string {
+  const slugs: Record<PersonaType, string> = {
+    architect: "arch",
+    security: "sec",
+    refactor: "ref",
+  };
+  return slugs[persona];
+}
+
 async function main() {
   const program = new Command();
 
@@ -37,9 +57,13 @@ async function main() {
     )
     .option(
       "--persona <type>",
-      "Persona for system header: architect | security | refactor",
+      "Persona for system header: architect | security | refactor (aliases: arch, sec, ref)",
     )
-    .version("0.2.1");
+    .option(
+      "--clean",
+      "Delete existing context.md and epistle-*.md in project root before scanning",
+    )
+    .version("0.2.2");
 
   program.parse(process.argv);
   const opts = program.opts<{
@@ -48,6 +72,7 @@ async function main() {
     exclude?: string[];
     format?: string;
     persona?: string;
+    clean?: boolean;
   }>();
 
   const format = (opts.format ?? "markdown").toLowerCase() as OutputFormat;
@@ -63,16 +88,17 @@ async function main() {
   const rawPersona = opts.persona?.toLowerCase();
   let persona: PersonaType | undefined;
   if (rawPersona) {
+    const resolved = resolvePersona(rawPersona);
     if (
-      rawPersona === "architect" ||
-      rawPersona === "security" ||
-      rawPersona === "refactor"
+      resolved === "architect" ||
+      resolved === "security" ||
+      resolved === "refactor"
     ) {
-      persona = rawPersona as PersonaType;
+      persona = resolved;
     } else {
       console.error(
         chalk.red(
-          `Invalid --persona value "${opts.persona}". Supported values are "architect", "security", "refactor".`,
+          `Invalid --persona value "${opts.persona}". Supported values are "architect", "security", "refactor" (or aliases: arch, sec, ref).`,
         ),
       );
       process.exit(1);
@@ -85,6 +111,26 @@ async function main() {
   console.error("");
 
   const rootDir = process.cwd();
+
+  let outputPath: string | undefined;
+  let usedAutoOutput = false;
+  if (opts.output) {
+    outputPath = path.resolve(rootDir, opts.output);
+  } else if (persona) {
+    const defaultName = `epistle-${personaToDefaultSlug(persona)}.md`;
+    outputPath = path.join(rootDir, defaultName);
+    usedAutoOutput = true;
+  }
+
+  if (usedAutoOutput) {
+    const defaultName = `epistle-${personaToDefaultSlug(persona!)}.md`;
+    console.error(
+      chalk.cyan(
+        `🚀 No output specified. Using default: ${defaultName}`,
+      ),
+    );
+  }
+
   const spinner = ora({
     text: chalk.cyan("Scanning project..."),
   }).start();
@@ -92,13 +138,30 @@ async function main() {
   try {
     const excludeGlobs: string[] = [...(opts.exclude ?? [])];
 
-    const outputPath = opts.output
-      ? path.resolve(rootDir, opts.output)
-      : undefined;
-
     if (outputPath) {
       const outputRel = path.relative(rootDir, outputPath) || outputPath;
       excludeGlobs.push(outputRel);
+    }
+
+    if (opts.clean) {
+      const toRemove: string[] = [path.join(rootDir, "context.md")];
+      try {
+        const entries = await fs.readdir(rootDir);
+        for (const name of entries) {
+          if (name.startsWith("epistle-") && name.endsWith(".md")) {
+            toRemove.push(path.join(rootDir, name));
+          }
+        }
+      } catch {
+        // Ignore readdir errors
+      }
+      for (const file of toRemove) {
+        try {
+          await fs.unlink(file);
+        } catch {
+          // Ignore if missing or other error
+        }
+      }
     }
 
     const files = await scanProject({
