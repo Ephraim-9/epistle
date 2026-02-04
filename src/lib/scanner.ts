@@ -97,6 +97,13 @@ export async function scanProject(options: ScannerOptions): Promise<ScannedFile[
       "**/*.svg",
       "**/*.png",
       "**/*.jpg",
+      "context.md",
+      "codebase.md",
+      "epistle-context.md",
+      "epistle-context.xml",
+      "context.xml",
+      "codebase.xml",
+      "v*_test.md",
     ],
   });
 
@@ -165,6 +172,14 @@ export async function scanProject(options: ScannerOptions): Promise<ScannedFile[
     files.push(scanned);
   }
 
-  return files.sort((a, b) => a.path.localeCompare(b.path));
+  files.sort((a, b) => {
+    const aIsPkg = a.path === "package.json";
+    const bIsPkg = b.path === "package.json";
+    if (aIsPkg && !bIsPkg) return -1;
+    if (!aIsPkg && bIsPkg) return 1;
+    return a.path.localeCompare(b.path);
+  });
+
+  return files;
 }
 

@@ -8,7 +8,13 @@ import ora from "ora";
 import clipboardy from "clipboardy";
 import gradient from "gradient-string";
 import { scanProject } from "./lib/scanner.js";
-import { formatOutput, type OutputFormat } from "./lib/formatter.js";
+import {
+  formatOutput,
+  type OutputFormat,
+  type PersonaType,
+} from "./lib/formatter.js";
+
+const TOKEN_BUDGET_WARNING = 50000;
 
 async function main() {
   const program = new Command();
@@ -29,7 +35,11 @@ async function main() {
       'Output format: "markdown" (default) or "xml"',
       "markdown",
     )
-    .version("0.1.2");
+    .option(
+      "--persona <type>",
+      "Persona for system header: architect | security | refactor",
+    )
+    .version("0.2.1");
 
   program.parse(process.argv);
   const opts = program.opts<{
@@ -37,6 +47,7 @@ async function main() {
     copy?: boolean;
     exclude?: string[];
     format?: string;
+    persona?: string;
   }>();
 
   const format = (opts.format ?? "markdown").toLowerCase() as OutputFormat;
@@ -47,6 +58,25 @@ async function main() {
       ),
     );
     process.exit(1);
+  }
+
+  const rawPersona = opts.persona?.toLowerCase();
+  let persona: PersonaType | undefined;
+  if (rawPersona) {
+    if (
+      rawPersona === "architect" ||
+      rawPersona === "security" ||
+      rawPersona === "refactor"
+    ) {
+      persona = rawPersona as PersonaType;
+    } else {
+      console.error(
+        chalk.red(
+          `Invalid --persona value "${opts.persona}". Supported values are "architect", "security", "refactor".`,
+        ),
+      );
+      process.exit(1);
+    }
   }
 
   // High-end banner
@@ -78,10 +108,19 @@ async function main() {
 
     spinner.text = chalk.cyan("Formatting output...");
 
-    const output = formatOutput(files, {
+    const { output, totalTokens } = formatOutput(files, {
       format,
       rootDir,
+      persona,
     });
+
+    if (totalTokens > TOKEN_BUDGET_WARNING) {
+      console.error(
+        chalk.yellow(
+          "⚠️  Warning: Total tokens exceed 50k. Consider using --exclude to prune large directories or data files.",
+        ),
+      );
+    }
 
     if (outputPath) {
       await fs.mkdir(path.dirname(outputPath), { recursive: true });

@@ -4,9 +4,12 @@ import type { ScannedFile } from "./scanner.js";
 
 export type OutputFormat = "markdown" | "xml";
 
+export type PersonaType = "architect" | "security" | "refactor";
+
 export interface FormatOptions {
   format: OutputFormat;
   rootDir: string;
+  persona?: PersonaType;
 }
 
 interface TreeNode {
@@ -69,18 +72,34 @@ function renderTree(node: TreeNode, prefix = ""): string {
   return lines.join("\n");
 }
 
-function detectPotentialSecrets(text: string): boolean {
-  const patterns: RegExp[] = [
+function getSecretPatterns(): RegExp[] {
+  // Intentionally focused on common API key / token shapes.
+  // We avoid generic long-token patterns to reduce false positives and
+  // deliberately do NOT match SHA/SRI-style tokens (sha256-/sha512-) or
+  // plain hex hashes.
+  return [
     /sk-[A-Za-z0-9]{16,}/g, // OpenAI-style keys
     /AKIA[0-9A-Z]{16}/g, // AWS access keys
     /AIza[0-9A-Za-z\-_]{20,}/g, // Google API keys
-    /[\w\-]{32,}/g, // generic long tokens
+    /\b[A-Za-z0-9-_]{20,}\.[A-Za-z0-9-_]{20,}\.[A-Za-z0-9-_]{20,}\b/g, // JWT-like tokens
   ];
+}
 
-  return patterns.some((re) => re.test(text));
+export function redactSecrets(text: string): { redacted: string; count: number } {
+  let result = text;
+  let count = 0;
+  for (const re of getSecretPatterns()) {
+    const reCopy = new RegExp(re.source, re.flags);
+    result = result.replace(reCopy, () => {
+      count++;
+      return "[REDACTED_SECRET]";
+    });
+  }
+  return { redacted: result, count };
 }
 
 function inferLanguage(filePath: string): string | undefined {
+
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
     case ".ts":
@@ -111,6 +130,7 @@ function inferLanguage(filePath: string): string | undefined {
 }
 
 function xmlEscape(value: string): string {
+
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -119,10 +139,21 @@ function xmlEscape(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+function getPersonaHeader(type: PersonaType): string {
+  switch (type) {
+    case "architect":
+      return "You are a Senior Software Architect. Review this codebase for modularity, scalability, and adherence to SOLID principles.";
+    case "security":
+      return "You are a Cyber Security Auditor. Scan this code for XSS, SQL injection, and insecure dependency patterns.";
+    case "refactor":
+      return "You are a Clean Code Expert. Suggest ways to reduce complexity and improve readability.";
+  }
+}
+
 export function formatOutput(
   files: ScannedFile[],
   options: FormatOptions,
-): string {
+): { output: string; totalTokens: number } {
   const sortedFiles = [...files].sort((a, b) => a.path.localeCompare(b.path));
 
   const tree = buildTree(sortedFiles);
@@ -136,19 +167,56 @@ export function formatOutput(
   const totalTokens = encoding.encode(joinedContent).length;
 
   const totalFiles = sortedFiles.length;
-  const hasSecrets = detectPotentialSecrets(joinedContent);
+
+  const redactedByPath = new Map<string, string>();
+  let totalRedactions = 0;
+  for (const file of sortedFiles) {
+    if (file.content && !file.isBinary && !file.isOversized) {
+      const { redacted, count } = redactSecrets(file.content);
+      redactedByPath.set(file.path, redacted);
+      totalRedactions += count;
+    }
+  }
+
+  let detectedFrameworkLine: string | undefined;
+  const pkgFile = sortedFiles.find(
+    (f) => f.path === "package.json" && typeof f.content === "string",
+  );
+  if (pkgFile?.content) {
+    try {
+      const pkg = JSON.parse(pkgFile.content) as {
+        dependencies?: Record<string, unknown>;
+        devDependencies?: Record<string, unknown>;
+      };
+      const deps = {
+        ...(pkg.dependencies ?? {}),
+        ...(pkg.devDependencies ?? {}),
+      };
+      if ("next" in deps || "react" in deps) {
+        detectedFrameworkLine = "Detected Framework: Next.js/React";
+      }
+    } catch {
+      // Ignore invalid package.json content for metadata purposes
+    }
+  }
 
   const headerLines: string[] = [];
+  if (options.persona) {
+    headerLines.push(getPersonaHeader(options.persona));
+  }
   headerLines.push(`Root: ${options.rootDir}`);
   headerLines.push(`Total Files: ${totalFiles}`);
   headerLines.push(`Total Tokens: ${totalTokens}`);
-  if (hasSecrets) {
+  if (detectedFrameworkLine) {
+    headerLines.push(detectedFrameworkLine);
+  }
+  if (totalRedactions > 0) {
     headerLines.push(
-      "Safety Warning: Potential secrets detected in the packed context. Review before sharing.",
+      `Safety: ${totalRedactions} secrets were detected and automatically redacted.`,
     );
   } else {
     headerLines.push(
-      "Safety: No obvious secrets detected, but manual review is still recommended.",
+      "Safety: No secrets were detected. Manual review is still recommended.",
     );
   }
 
@@ -175,13 +243,13 @@ export function formatOutput(
         parts.push(`<file ${attrs}>${xmlEscape(note)}</file>`);
       } else {
         parts.push(
-          `<file ${attrs}>${xmlEscape(file.content)}</file>`,
+          `<file ${attrs}>${xmlEscape(redactedByPath.get(file.path) ?? file.content)}</file>`,
         );
       }
     }
 
     parts.push("</epistle>");
-    return parts.join("\n");
+    return { output: parts.join("\n"), totalTokens };
   }
 
   // Markdown format (default)
@@ -192,6 +260,19 @@ export function formatOutput(
   }
   mdParts.push("```");
   mdParts.push("");
+
+  // Table of Contents
+  mdParts.push("## Table of Contents");
+  mdParts.push("");
+  for (const file of sortedFiles) {
+    if (!file.content || file.isBinary || file.isOversized) {
+      continue;
+    }
+    const slug = file.path.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    mdParts.push(`- [${file.path}](#${slug})`);
+  }
+  mdParts.push("");
+
   mdParts.push("```");
   mdParts.push(headerText);
   mdParts.push("```");
@@ -217,11 +298,11 @@ export function formatOutput(
     const lang = inferLanguage(file.path);
     mdParts.push("");
     mdParts.push(lang ? "```" + lang : "```");
-    mdParts.push(file.content);
+    mdParts.push(redactedByPath.get(file.path) ?? file.content);
     mdParts.push("```");
     mdParts.push("");
   }
 
-  return mdParts.join("\n");
+  return { output: mdParts.join("\n"), totalTokens };
 }
 
