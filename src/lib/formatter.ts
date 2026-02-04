@@ -10,6 +10,7 @@ export interface FormatOptions {
   format: OutputFormat;
   rootDir: string;
   persona?: PersonaType;
+  task?: string;
 }
 
 interface TreeNode {
@@ -178,7 +179,7 @@ export function formatOutput(
     }
   }
 
-  let detectedFrameworkLine: string | undefined;
+  const techStack = new Set<string>();
   const pkgFile = sortedFiles.find(
     (f) => f.path === "package.json" && typeof f.content === "string",
   );
@@ -192,12 +193,38 @@ export function formatOutput(
         ...(pkg.dependencies ?? {}),
         ...(pkg.devDependencies ?? {}),
       };
-      if ("next" in deps || "react" in deps) {
-        detectedFrameworkLine = "Detected Framework: Next.js/React";
-      }
+
+      const hasDep = (name: string) => Object.prototype.hasOwnProperty.call(deps, name);
+
+      // Frontend frameworks
+      if (hasDep("react")) techStack.add("React");
+      if (hasDep("next")) techStack.add("Next.js");
+      if (hasDep("vue")) techStack.add("Vue");
+      if (hasDep("@angular/core")) techStack.add("Angular");
+      if (hasDep("svelte")) techStack.add("Svelte");
+      if (hasDep("remix")) techStack.add("Remix");
+
+      // Backend frameworks
+      if (hasDep("express")) techStack.add("Express");
+      if (hasDep("koa")) techStack.add("Koa");
+      if (hasDep("fastify")) techStack.add("Fastify");
+      if (hasDep("@nestjs/core")) techStack.add("NestJS");
+      if (hasDep("hapi")) techStack.add("hapi");
+      if (hasDep("apollo-server")) techStack.add("Apollo Server");
+      if (hasDep("graphql-yoga")) techStack.add("GraphQL Yoga");
+
+      // Data / ORM
+      if (hasDep("mongoose")) techStack.add("Mongoose");
+      if (hasDep("prisma")) techStack.add("Prisma");
+      if (hasDep("typeorm")) techStack.add("TypeORM");
+      if (hasDep("sequelize")) techStack.add("Sequelize");
     } catch {
       // Ignore invalid package.json content for metadata purposes
     }
+  }
+
+  function slugifyHeading(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
   }
 
   const headerLines: string[] = [];
@@ -207,8 +234,13 @@ export function formatOutput(
   headerLines.push(`Root: ${options.rootDir}`);
   headerLines.push(`Total Files: ${totalFiles}`);
   headerLines.push(`Total Tokens: ${totalTokens}`);
-  if (detectedFrameworkLine) {
-    headerLines.push(detectedFrameworkLine);
+  if (techStack.size > 0) {
+    const techStackLine =
+      "Tech Stack: " + Array.from(techStack).sort().join(", ");
+    headerLines.push(techStackLine);
+  }
+  if (options.task && options.task.trim().length > 0) {
+    headerLines.push("Task Status: Pending (See end of file)");
   }
   if (totalRedactions > 0) {
     headerLines.push(
@@ -231,6 +263,12 @@ export function formatOutput(
     parts.push("<metadata><![CDATA[");
     parts.push(headerText);
     parts.push("]]></metadata>");
+
+    if (options.task && options.task.trim().length > 0) {
+      parts.push("<task><![CDATA[");
+      parts.push(options.task);
+      parts.push("]]></task>");
+    }
 
     for (const file of sortedFiles) {
       const attrs = `path="${xmlEscape(file.path)}"`;
@@ -268,7 +306,7 @@ export function formatOutput(
     if (!file.content || file.isBinary || file.isOversized) {
       continue;
     }
-    const slug = file.path.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const slug = slugifyHeading(file.path);
     mdParts.push(`- [${file.path}](#${slug})`);
   }
   mdParts.push("");
@@ -279,7 +317,8 @@ export function formatOutput(
   mdParts.push("");
 
   for (const file of sortedFiles) {
-    mdParts.push(`## ${file.path}`);
+    const slug = slugifyHeading(file.path);
+    mdParts.push(`## ${file.path} {#${slug}}`);
     if (!file.content || file.isBinary || file.isOversized) {
       if (file.isBinary) {
         mdParts.push("");
@@ -299,6 +338,15 @@ export function formatOutput(
     mdParts.push("");
     mdParts.push(lang ? "```" + lang : "```");
     mdParts.push(redactedByPath.get(file.path) ?? file.content);
+    mdParts.push("```");
+    mdParts.push("");
+  }
+
+  if (options.task && options.task.trim().length > 0) {
+    mdParts.push("## User Task / Instructions");
+    mdParts.push("");
+    mdParts.push("```");
+    mdParts.push(options.task);
     mdParts.push("```");
     mdParts.push("");
   }

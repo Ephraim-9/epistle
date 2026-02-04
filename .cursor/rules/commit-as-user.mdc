@@ -1,0 +1,11 @@
+---
+description: Commit and push as the repository owner only; do not add Cursor as co-author.
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# Git commits
+
+- **Never** add `Co-authored-by: Cursor <cursoragent@cursor.com>` (or any Cursor/agent co-author) to commit messages.
+- Commits and pushes must be authored and attributed to the repository owner only (use their Git `user.name` and `user.email`).
+- When amending or rewriting commits that contain a Cursor co-author trailer, remove that trailer before pushing.

@@ -51,6 +51,11 @@ async function main() {
       "Additional glob patterns to exclude from scanning",
     )
     .option(
+      "-t, --task <instruction>",
+      "User task or instructions to attach to the context",
+    )
+    .option("--stdout", "Force writing output to stdout even when terminal is interactive")
+    .option(
       "--format <format>",
       'Output format: "markdown" (default) or "xml"',
       "markdown",
@@ -63,7 +68,7 @@ async function main() {
       "--clean",
       "Delete existing context.md and epistle-*.md in project root before scanning",
     )
-    .version("0.2.2");
+    .version("0.2.3");
 
   program.parse(process.argv);
   const opts = program.opts<{
@@ -73,6 +78,8 @@ async function main() {
     format?: string;
     persona?: string;
     clean?: boolean;
+    stdout?: boolean;
+    task?: string;
   }>();
 
   const format = (opts.format ?? "markdown").toLowerCase() as OutputFormat;
@@ -175,6 +182,7 @@ async function main() {
       format,
       rootDir,
       persona,
+      task: opts.task,
     });
 
     if (totalTokens > TOKEN_BUDGET_WARNING) {
@@ -185,12 +193,21 @@ async function main() {
       );
     }
 
+    const shouldWriteStdout =
+      !outputPath && (!process.stdout.isTTY || opts.stdout === true);
+
     if (outputPath) {
       await fs.mkdir(path.dirname(outputPath), { recursive: true });
       await fs.writeFile(outputPath, output, "utf8");
-    } else {
+    } else if (shouldWriteStdout) {
       // Write to stdout only; banner/spinner messages go to stderr
       process.stdout.write(output + "\n");
+    } else {
+      console.error(
+        chalk.yellow(
+          "Output blocked to prevent terminal flood. Use -o <file> or add the --stdout flag to force display.",
+        ),
+      );
     }
 
     if (opts.copy) {
@@ -214,6 +231,62 @@ async function main() {
           `.`,
       ),
     );
+
+    // Dashboard summary box (stderr)
+    let projectName: string = path.basename(rootDir);
+    try {
+      const pkgRaw = await fs.readFile(path.join(rootDir, "package.json"), "utf8");
+      const pkg = JSON.parse(pkgRaw) as { name?: unknown };
+      if (typeof pkg.name === "string" && pkg.name.trim().length > 0) {
+        projectName = pkg.name;
+      }
+    } catch {
+      // Ignore missing or invalid package.json; fall back to folder name
+    }
+
+    const personaLabel =
+      persona === "architect"
+        ? "Architect"
+        : persona === "security"
+          ? "Security"
+          : persona === "refactor"
+            ? "Refactor"
+            : "Default";
+
+    const taskPreview = "(none)";
+
+    const tokenColor =
+      totalTokens < 50000
+        ? chalk.green
+        : totalTokens <= 100000
+          ? chalk.yellow
+          : chalk.red;
+
+    const statsLine = `Stats: ${files.length} files | ${tokenColor(
+      `${totalTokens} tokens`,
+    )}`;
+
+    const lines: string[] = [];
+    lines.push(`Project: ${projectName}`);
+    lines.push(`Persona: ${personaLabel}`);
+    lines.push(statsLine);
+    lines.push(`Task: ${taskPreview}`);
+
+    const contentWidth = lines.reduce(
+      (max, line) => Math.max(max, line.length),
+      0,
+    );
+
+    const topBorder = "┏" + "━".repeat(contentWidth + 2) + "┓";
+    const bottomBorder = "┗" + "━".repeat(contentWidth + 2) + "┛";
+
+    console.error(topBorder);
+    for (const line of lines) {
+      const padding = " ".repeat(contentWidth - line.length);
+      console.error(`┃ ${line}${padding} ┃`);
+    }
+    console.error(bottomBorder);
+
     console.error(
       chalk.dim(
         "Tip: Add your output file to .gitignore to keep your repo clean.",
