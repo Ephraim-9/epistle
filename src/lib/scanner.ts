@@ -25,8 +25,18 @@ export interface ScannerOptions {
   rootDir: string;
   /** Extra glob patterns to exclude (from --exclude) */
   excludeGlobs?: string[];
+  /** Glob patterns to force-include after ignore/exclude filtering */
+  includeGlobs?: string[];
   /** Maximum file size in bytes for inlining contents (default 100KB) */
   maxFileSizeBytes?: number;
+}
+
+export interface ScanProjectResult {
+  files: ScannedFile[];
+  /** Total number of candidate file entries discovered before ignore/exclude */
+  totalEntries: number;
+  /** Number of entries pruned by ignore/exclude (including lite mode) */
+  ignoredEntries: number;
 }
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 100 * 1024;
@@ -73,14 +83,15 @@ async function buildIgnore(
   return ig;
 }
 
-export async function scanProject(options: ScannerOptions): Promise<ScannedFile[]> {
+export async function scanProject(options: ScannerOptions): Promise<ScanProjectResult> {
   const rootDir = path.resolve(options.rootDir);
   const maxFileSizeBytes = options.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
   const excludeGlobs = options.excludeGlobs ?? [];
+  const includeGlobs = options.includeGlobs ?? [];
 
   const ig = await buildIgnore(rootDir, excludeGlobs);
 
-  const entries = await fg("**/*", {
+  const allEntries = await fg("**/*", {
     cwd: rootDir,
     dot: true,
     onlyFiles: true,
@@ -107,14 +118,31 @@ export async function scanProject(options: ScannerOptions): Promise<ScannedFile[
     ],
   });
 
+  let filteredEntries = allEntries.filter((relative) => !ig.ignores(relative));
+
+  if (includeGlobs.length > 0) {
+    const includeEntries = await fg(includeGlobs, {
+      cwd: rootDir,
+      dot: true,
+      onlyFiles: true,
+      unique: true,
+      followSymbolicLinks: false,
+    });
+
+    const merged = new Set<string>();
+    for (const rel of filteredEntries) {
+      merged.add(rel);
+    }
+    for (const rel of includeEntries) {
+      merged.add(rel);
+    }
+    filteredEntries = Array.from(merged);
+  }
+
   const files: ScannedFile[] = [];
 
-  for (const relative of entries) {
+  for (const relative of filteredEntries) {
     // fast-glob returns paths relative to cwd
-    if (ig.ignores(relative)) {
-      continue;
-    }
-
     const absolutePath = path.join(rootDir, relative);
 
     const stat = await fs.lstat(absolutePath);
@@ -180,6 +208,13 @@ export async function scanProject(options: ScannerOptions): Promise<ScannedFile[
     return a.path.localeCompare(b.path);
   });
 
-  return files;
+  const totalEntries = allEntries.length;
+  const ignoredEntries = totalEntries - filteredEntries.length;
+
+  return {
+    files,
+    totalEntries,
+    ignoredEntries,
+  };
 }
 

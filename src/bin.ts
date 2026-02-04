@@ -51,6 +51,10 @@ async function main() {
       "Additional glob patterns to exclude from scanning",
     )
     .option(
+      "-i, --include <pattern...>",
+      "Glob patterns to force-include after filtering",
+    )
+    .option(
       "-t, --task <instruction>",
       "User task or instructions to attach to the context",
     )
@@ -68,18 +72,24 @@ async function main() {
       "--clean",
       "Delete existing context.md and epistle-*.md in project root before scanning",
     )
-    .version("0.2.3");
+    .option(
+      "-l, --lite",
+      "Enable lite mode: auto-prune heavy assets and data files",
+    )
+    .version("0.2.4");
 
   program.parse(process.argv);
   const opts = program.opts<{
     output?: string;
     copy?: boolean;
     exclude?: string[];
+    include?: string[];
     format?: string;
     persona?: string;
     clean?: boolean;
     stdout?: boolean;
     task?: string;
+    lite?: boolean;
   }>();
 
   const format = (opts.format ?? "markdown").toLowerCase() as OutputFormat;
@@ -150,6 +160,27 @@ async function main() {
       excludeGlobs.push(outputRel);
     }
 
+    if (opts.lite) {
+      excludeGlobs.push(
+        "**/*.css",
+        "**/*.scss",
+        "**/*.sass",
+        "**/*.less",
+        "**/*.json",
+        "**/*.svg",
+        "**/*.png",
+        "**/*.jpg",
+        "**/*.jpeg",
+        "**/*.ico",
+        "**/*.ttf",
+        "**/*.otf",
+        "**/*.woff",
+        "**/*.woff2",
+      );
+      // Always preserve package.json even when excluding all JSON files
+      excludeGlobs.push("!package.json");
+    }
+
     if (opts.clean) {
       const toRemove: string[] = [path.join(rootDir, "context.md")];
       try {
@@ -171,9 +202,10 @@ async function main() {
       }
     }
 
-    const files = await scanProject({
+    const { files, ignoredEntries } = await scanProject({
       rootDir,
       excludeGlobs,
+      includeGlobs: opts.include,
     });
 
     spinner.text = chalk.cyan("Formatting output...");
@@ -262,13 +294,16 @@ async function main() {
           ? chalk.yellow
           : chalk.red;
 
-    const statsLine = `Stats: ${files.length} files | ${tokenColor(
+    const prunedCount = Math.max(ignoredEntries, 0);
+    const statsLine = `Stats: ${files.length} files | Pruned: ${prunedCount} files | ${tokenColor(
       `${totalTokens} tokens`,
     )}`;
 
     const lines: string[] = [];
     lines.push(`Project: ${projectName}`);
     lines.push(`Persona: ${personaLabel}`);
+    const modeLabel = opts.lite ? chalk.green("Lite") : "Full";
+    lines.push(`Mode: ${modeLabel}`);
     lines.push(statsLine);
     lines.push(`Task: ${taskPreview}`);
 
