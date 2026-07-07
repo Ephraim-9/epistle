@@ -1,12 +1,15 @@
 import path from "node:path";
-import { getEncoding, type TiktokenEncoding } from "js-tiktoken";
 import type { ScannedFile } from "./scanner.js";
 import { redactSecrets } from "./secrets.js";
+import {
+  getTokenCounter,
+  TOKEN_ENCODINGS,
+  type TokenCounter,
+  type TokenEncoding,
+} from "./tokenizer.js";
 
-export { redactSecrets };
-
-export const TOKEN_ENCODINGS = ["o200k_base", "cl100k_base"] as const;
-export type TokenEncoding = (typeof TOKEN_ENCODINGS)[number];
+export { redactSecrets, TOKEN_ENCODINGS };
+export type { TokenEncoding };
 
 export type OutputFormat = "markdown" | "xml" | "plain" | "json";
 
@@ -219,9 +222,8 @@ function getPersonaHeader(type: PersonaType): string {
 function computeFileTokenStats(
   files: ScannedFile[],
   redactedByPath: Map<string, string>,
-  encodingName: TokenEncoding = "o200k_base",
+  countTokens: TokenCounter,
 ): { fileTokenStats: FileTokenStat[]; totalTokens: number } {
-  const encoding = getEncoding(encodingName as TiktokenEncoding);
   const stats: FileTokenStat[] = [];
   let totalTokens = 0;
 
@@ -232,7 +234,7 @@ function computeFileTokenStats(
     }
 
     const contentForTokens = redactedByPath.get(file.path) ?? file.content;
-    const tokens = encoding.encode(contentForTokens).length;
+    const tokens = countTokens(contentForTokens);
     stats.push({ path: file.path, tokens });
     totalTokens += tokens;
   }
@@ -336,17 +338,18 @@ function unavailableNote(file: ScannedFile, maxFileSizeKB: number): string {
   return "(no content)";
 }
 
-export function formatOutput(
+export async function formatOutput(
   files: ScannedFile[],
   options: FormatOptions,
-): {
+): Promise<{
   output: string;
   totalTokens: number;
   fileTokenStats: FileTokenStat[];
   dirTokenMap: DirectoryTokenMap;
   treeText: string;
-} {
+}> {
   const maxFileSizeKB = options.maxFileSizeKB ?? 100;
+  const countTokens = await getTokenCounter(options.encoding);
   const sortedFiles =
     options.sortMode === "given"
       ? [...files]
@@ -380,7 +383,7 @@ export function formatOutput(
   const { fileTokenStats, totalTokens } = computeFileTokenStats(
     sortedFiles,
     redactedByPath,
-    options.encoding,
+    countTokens,
   );
   const dirTokenMap = aggregateDirectoryTokens(fileTokenStats);
 
@@ -414,6 +417,9 @@ export function formatOutput(
   const headerText = headerLines.join("\n");
 
   if (options.format === "json") {
+    const tokensByPath = new Map(
+      fileTokenStats.map((s) => [s.path, s.tokens]),
+    );
     const payload = {
       metadata: {
         root: options.rootDir,
@@ -427,8 +433,7 @@ export function formatOutput(
       tree: treeText,
       files: sortedFiles.map((file) => ({
         path: file.path,
-        tokens:
-          fileTokenStats.find((s) => s.path === file.path)?.tokens ?? 0,
+        tokens: tokensByPath.get(file.path) ?? 0,
         binary: file.isBinary,
         oversized: file.isOversized,
         omitted: file.isOmitted ?? false,

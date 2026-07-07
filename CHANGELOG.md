@@ -3,6 +3,26 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.0] - 2026-07-07
+
+### Changed
+- **4.2× faster end-to-end on large repos** (facebook/react, 7,128 files:
+  23.0s → 5.4s; scan phase 5.1s → 1.4s). Three independent fixes, with
+  byte-identical output verified against the previous version:
+  - Scanner reads files with bounded parallelism (64 concurrent fs ops)
+    instead of one at a time, and reads each file **once** — binary
+    detection now sniffs the in-memory buffer instead of re-opening the
+    file from disk.
+  - Tokenizer swapped from `js-tiktoken` to `gpt-tokenizer` (still pure
+    JS, no wasm/native deps): identical token counts, 5.6× faster
+    encoding, 3× faster initialization. Encoders are cached, so the
+    `--max-tokens` re-format pass no longer pays initialization twice.
+  - Two accidentally-quadratic lookups (JSON per-file token stats, token
+    budget file dropping) replaced with map lookups.
+
+### Notes
+- `formatOutput()` in the library API is now async.
+
 ## [1.0.0] - 2026-07-07
 
 ### Added

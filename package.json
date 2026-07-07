@@ -1,6 +1,6 @@
 {
   "name": "epistle",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Epistle – a production-grade Node.js CLI that packs a local codebase into a single, LLM-friendly context file.",
   "private": false,
   "bin": {
@@ -27,15 +27,15 @@
     "clipboardy": "^4.0.0",
     "commander": "^12.0.0",
     "fast-glob": "^3.3.2",
+    "gpt-tokenizer": "^3.4.0",
     "gradient-string": "^2.0.2",
     "ignore": "^5.3.0",
     "isbinaryfile": "^5.0.0",
-    "js-tiktoken": "^1.0.11",
     "ora": "^8.0.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
     "@types/gradient-string": "^1.1.6",
+    "@types/node": "^22.0.0",
     "eslint": "^9.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.6.0"

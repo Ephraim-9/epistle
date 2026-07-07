@@ -32,7 +32,7 @@ import {
 import { getRecipe, recipeNames } from "./lib/recipes.js";
 import { applyProfile } from "./lib/config.js";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 
 type SortMode = "path" | "churn" | "size";
 
@@ -694,7 +694,7 @@ async function main() {
     }
 
     let { output, totalTokens, fileTokenStats, dirTokenMap, treeText } =
-      formatOutput(files, formatOpts);
+      await formatOutput(files, formatOpts);
 
     // Token budget enforcement: drop the heaviest files until the pack fits.
     const omittedForBudget: string[] = [];
@@ -702,11 +702,12 @@ async function main() {
       const byTokensDesc = [...fileTokenStats].sort(
         (a, b) => b.tokens - a.tokens,
       );
+      const filesByPath = new Map(files.map((f) => [f.path, f]));
       let estimated = totalTokens;
       for (const stat of byTokensDesc) {
         if (estimated <= maxTokens) break;
         if (stat.path === "package.json") continue; // always keep the manifest
-        const file = files.find((f) => f.path === stat.path);
+        const file = filesByPath.get(stat.path);
         if (!file || !file.content) continue;
         file.isOmitted = true;
         delete file.content;
@@ -714,7 +715,7 @@ async function main() {
         estimated -= stat.tokens;
       }
       ({ output, totalTokens, fileTokenStats, dirTokenMap, treeText } =
-        formatOutput(files, formatOpts));
+        await formatOutput(files, formatOpts));
     }
 
     if (opts.dryRun) {

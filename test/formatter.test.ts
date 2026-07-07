@@ -19,15 +19,15 @@ function makeFile(p: string, content: string): ScannedFile {
   };
 }
 
-test("fenceFor extends fences past embedded backticks", () => {
+test("fenceFor extends fences past embedded backticks", async () => {
   assert.equal(fenceFor("plain text"), "```");
   assert.equal(fenceFor("```js\ncode\n```"), "````");
   assert.equal(fenceFor("````\nnested\n````"), "`````");
 });
 
-test("markdown output survives files containing code fences", () => {
+test("markdown output survives files containing code fences", async () => {
   const files = [makeFile("README.md", "Example:\n```js\nconsole.log(1)\n```\n")];
-  const { output } = formatOutput(files, {
+  const { output } = await formatOutput(files, {
     format: "markdown",
     rootDir: "/project",
   });
@@ -35,12 +35,12 @@ test("markdown output survives files containing code fences", () => {
   assert.match(output, /````/);
 });
 
-test("addLineNumbers pads and numbers every line", () => {
+test("addLineNumbers pads and numbers every line", async () => {
   const result = addLineNumbers("a\nb\nc");
   assert.equal(result, "1: a\n2: b\n3: c");
 });
 
-test("redactSecrets replaces API-key shapes and counts them", () => {
+test("redactSecrets replaces API-key shapes and counts them", async () => {
   const input = "key=sk-abcdefghijklmnop123456 aws=AKIAABCDEFGHIJKLMNOP";
   const { redacted, count } = redactSecrets(input);
   assert.equal(count, 2);
@@ -48,9 +48,9 @@ test("redactSecrets replaces API-key shapes and counts them", () => {
   assert.ok(redacted.includes("[REDACTED_SECRET]"));
 });
 
-test("json format emits valid JSON with metadata, tree, and files", () => {
+test("json format emits valid JSON with metadata, tree, and files", async () => {
   const files = [makeFile("src/index.ts", "export const x = 1;\n")];
-  const { output, totalTokens } = formatOutput(files, {
+  const { output, totalTokens } = await formatOutput(files, {
     format: "json",
     rootDir: "/project",
     task: "Review this",
@@ -63,9 +63,9 @@ test("json format emits valid JSON with metadata, tree, and files", () => {
   assert.ok(parsed.tree.includes("index.ts"));
 });
 
-test("plain format contains separators and file sections", () => {
+test("plain format contains separators and file sections", async () => {
   const files = [makeFile("a.txt", "hello")];
-  const { output } = formatOutput(files, {
+  const { output } = await formatOutput(files, {
     format: "plain",
     rootDir: "/project",
   });
@@ -74,9 +74,9 @@ test("plain format contains separators and file sections", () => {
   assert.ok(output.includes("DIRECTORY STRUCTURE"));
 });
 
-test("line numbers option is applied to content", () => {
+test("line numbers option is applied to content", async () => {
   const files = [makeFile("a.js", "one\ntwo")];
-  const { output } = formatOutput(files, {
+  const { output } = await formatOutput(files, {
     format: "markdown",
     rootDir: "/project",
     lineNumbers: true,
@@ -85,7 +85,7 @@ test("line numbers option is applied to content", () => {
   assert.ok(output.includes("2: two"));
 });
 
-test("oversized message reflects configured max file size", () => {
+test("oversized message reflects configured max file size", async () => {
   const files: ScannedFile[] = [
     {
       path: "big.bin.txt",
@@ -95,7 +95,7 @@ test("oversized message reflects configured max file size", () => {
       isOversized: true,
     },
   ];
-  const { output } = formatOutput(files, {
+  const { output } = await formatOutput(files, {
     format: "markdown",
     rootDir: "/project",
     maxFileSizeKB: 42,
