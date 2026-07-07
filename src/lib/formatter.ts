@@ -1,6 +1,12 @@
 import path from "node:path";
-import { encodingForModel } from "js-tiktoken";
+import { getEncoding, type TiktokenEncoding } from "js-tiktoken";
 import type { ScannedFile } from "./scanner.js";
+import { redactSecrets } from "./secrets.js";
+
+export { redactSecrets };
+
+export const TOKEN_ENCODINGS = ["o200k_base", "cl100k_base"] as const;
+export type TokenEncoding = (typeof TOKEN_ENCODINGS)[number];
 
 export type OutputFormat = "markdown" | "xml" | "plain" | "json";
 
@@ -28,6 +34,10 @@ export interface FormatOptions {
   gitDiff?: string;
   /** Recent commit lines appended as a Recent Commits section */
   gitLog?: string;
+  /** Redact detected secrets (default true) */
+  redact?: boolean;
+  /** Tokenizer encoding for token counts (default o200k_base) */
+  encoding?: TokenEncoding;
 }
 
 interface TreeNode {
@@ -97,32 +107,6 @@ function renderTree(node: TreeNode, maxFileSizeKB: number, prefix = ""): string 
   });
 
   return lines.join("\n");
-}
-
-function getSecretPatterns(): RegExp[] {
-  // Intentionally focused on common API key / token shapes.
-  // We avoid generic long-token patterns to reduce false positives and
-  // deliberately do NOT match SHA/SRI-style tokens (sha256-/sha512-) or
-  // plain hex hashes.
-  return [
-    /sk-[A-Za-z0-9]{16,}/g, // OpenAI-style keys
-    /AKIA[0-9A-Z]{16}/g, // AWS access keys
-    /AIza[0-9A-Za-z\-_]{20,}/g, // Google API keys
-    /\b[A-Za-z0-9-_]{20,}\.[A-Za-z0-9-_]{20,}\.[A-Za-z0-9-_]{20,}\b/g, // JWT-like tokens
-  ];
-}
-
-export function redactSecrets(text: string): { redacted: string; count: number } {
-  let result = text;
-  let count = 0;
-  for (const re of getSecretPatterns()) {
-    const reCopy = new RegExp(re.source, re.flags);
-    result = result.replace(reCopy, () => {
-      count++;
-      return "[REDACTED_SECRET]";
-    });
-  }
-  return { redacted: result, count };
 }
 
 function inferLanguage(filePath: string): string | undefined {
@@ -235,8 +219,9 @@ function getPersonaHeader(type: PersonaType): string {
 function computeFileTokenStats(
   files: ScannedFile[],
   redactedByPath: Map<string, string>,
+  encodingName: TokenEncoding = "o200k_base",
 ): { fileTokenStats: FileTokenStat[]; totalTokens: number } {
-  const encoding = encodingForModel("gpt-4o-mini");
+  const encoding = getEncoding(encodingName as TiktokenEncoding);
   const stats: FileTokenStat[] = [];
   let totalTokens = 0;
 
@@ -371,13 +356,16 @@ export function formatOutput(
 
   const totalFiles = sortedFiles.length;
 
+  const shouldRedact = options.redact !== false;
   const redactedByPath = new Map<string, string>();
   let totalRedactions = 0;
-  for (const file of sortedFiles) {
-    if (file.content && !file.isBinary && !file.isOversized) {
-      const { redacted, count } = redactSecrets(file.content);
-      redactedByPath.set(file.path, redacted);
-      totalRedactions += count;
+  if (shouldRedact) {
+    for (const file of sortedFiles) {
+      if (file.content && !file.isBinary && !file.isOversized) {
+        const { redacted, count } = redactSecrets(file.content);
+        redactedByPath.set(file.path, redacted);
+        totalRedactions += count;
+      }
     }
   }
 
@@ -391,6 +379,7 @@ export function formatOutput(
   const { fileTokenStats, totalTokens } = computeFileTokenStats(
     sortedFiles,
     redactedByPath,
+    options.encoding,
   );
   const dirTokenMap = aggregateDirectoryTokens(fileTokenStats);
 
@@ -407,7 +396,11 @@ export function formatOutput(
   if (options.task && options.task.trim().length > 0) {
     headerLines.push("Task Status: Pending (See end of file)");
   }
-  if (totalRedactions > 0) {
+  if (!shouldRedact) {
+    headerLines.push(
+      "Safety: Secret redaction was DISABLED (--no-redact). Review before sharing.",
+    );
+  } else if (totalRedactions > 0) {
     headerLines.push(
       `Safety: ${totalRedactions} secrets were detected and automatically redacted.`,
     );

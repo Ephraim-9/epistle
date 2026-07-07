@@ -32,6 +32,10 @@ export interface EpistleConfig {
   includeDiffs?: boolean;
   /** Append recent commit history (true for 20 commits, or a number) */
   includeLogs?: boolean | number;
+  /** Automatic secret redaction (default true) */
+  redact?: boolean;
+  /** Tokenizer encoding: "o200k_base" or "cl100k_base" */
+  encoding?: string;
 }
 
 export const CONFIG_FILE_NAME = "epistle.config.json";

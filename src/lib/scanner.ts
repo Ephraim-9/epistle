@@ -4,6 +4,7 @@ import fg from "fast-glob";
 import type { Ignore } from "ignore";
 import * as ignoreLib from "ignore";
 import { isBinaryFile } from "isbinaryfile";
+import { isSuspiciousFile } from "./secrets.js";
 
 export interface ScannedFile {
   /** Project-relative path using forward slashes */
@@ -41,6 +42,8 @@ export interface ScanProjectResult {
   totalEntries: number;
   /** Number of entries pruned by ignore/exclude (including lite mode) */
   ignoredEntries: number;
+  /** Credential-shaped files excluded for safety (.env, keys, …) */
+  suspiciousSkipped: string[];
 }
 
 export const DEFAULT_MAX_FILE_SIZE_BYTES = 100 * 1024;
@@ -268,8 +271,13 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
   }
 
   const files: ScannedFile[] = [];
+  const suspiciousSkipped: string[] = [];
 
   for (const relative of filteredEntries) {
+    if (isSuspiciousFile(relative.split(path.sep).join(path.posix.sep))) {
+      suspiciousSkipped.push(relative);
+      continue;
+    }
     // fast-glob returns paths relative to cwd
     const absolutePath = path.join(rootDir, relative);
 
@@ -343,5 +351,6 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
     files,
     totalEntries,
     ignoredEntries,
+    suspiciousSkipped,
   };
 }

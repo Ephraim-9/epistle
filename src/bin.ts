@@ -11,10 +11,12 @@ import { scanProject } from "./lib/scanner.js";
 import {
   formatOutput,
   OUTPUT_FORMATS,
+  TOKEN_ENCODINGS,
   type DirectoryTokenMap,
   type FileTokenStat,
   type OutputFormat,
   type PersonaType,
+  type TokenEncoding,
 } from "./lib/formatter.js";
 import { initConfig, loadConfig, CONFIG_FILE_NAME } from "./lib/config.js";
 import { transformContent } from "./lib/compress.js";
@@ -26,9 +28,35 @@ import {
   isGitRepo,
 } from "./lib/git.js";
 
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 
 type SortMode = "path" | "churn" | "size";
+
+/** Context windows of popular models, for the --fit report. */
+const MODEL_WINDOWS: Array<{ label: string; window: number }> = [
+  { label: "Claude (Sonnet/Opus)", window: 200_000 },
+  { label: "GPT-4o / GPT-4.1", window: 128_000 },
+  { label: "Gemini 2.5 Pro", window: 1_000_000 },
+  { label: "Llama 4 / local 128k", window: 128_000 },
+  { label: "Local 32k", window: 32_000 },
+];
+
+function renderFitReport(totalTokens: number): string[] {
+  const lines: string[] = [];
+  const barWidth = 20;
+  for (const { label, window } of MODEL_WINDOWS) {
+    const ratio = totalTokens / window;
+    const pct = Math.round(ratio * 100);
+    const filled = Math.min(barWidth, Math.round(ratio * barWidth));
+    const bar =
+      "█".repeat(filled) + "░".repeat(Math.max(0, barWidth - filled));
+    const colored =
+      ratio > 1 ? chalk.red(bar) : ratio > 0.7 ? chalk.yellow(bar) : chalk.green(bar);
+    const pctLabel = ratio > 1 ? chalk.red(`${pct}% — DOES NOT FIT`) : `${pct}%`;
+    lines.push(`  ${label.padEnd(22)} ${colored} ${pctLabel}`);
+  }
+  return lines;
+}
 const TOKEN_BUDGET_WARNING = 50000;
 
 type HogMode = "files" | "dirs" | "auto";
@@ -149,6 +177,18 @@ async function main() {
       'File order: "path" (default), "churn" (most-edited last), or "size" (largest last)',
     )
     .option(
+      "--no-redact",
+      "Disable automatic secret redaction (output will carry a warning)",
+    )
+    .option(
+      "--encoding <name>",
+      `Tokenizer for token counts: ${TOKEN_ENCODINGS.join(" | ")} (default: o200k_base)`,
+    )
+    .option(
+      "--fit",
+      "Show how the pack fits into popular model context windows",
+    )
+    .option(
       "--max-file-size <kb>",
       "Skip files larger than this many kilobytes (default: 100)",
     )
@@ -187,6 +227,9 @@ async function main() {
     includeDiffs?: boolean;
     includeLogs?: string | boolean;
     sort?: string;
+    redact?: boolean;
+    encoding?: string;
+    fit?: boolean;
     dryRun?: boolean;
     config?: string;
     init?: boolean;
@@ -283,6 +326,23 @@ async function main() {
       includeLogsCount = Math.floor(parsed);
     }
   }
+
+  const redact = opts.redact !== false && config.redact !== false;
+
+  const encodingRaw = (
+    opts.encoding ??
+    config.encoding ??
+    "o200k_base"
+  ).toLowerCase();
+  if (!TOKEN_ENCODINGS.includes(encodingRaw as TokenEncoding)) {
+    console.error(
+      chalk.red(
+        `Invalid --encoding value "${encodingRaw}". Supported values: ${TOKEN_ENCODINGS.join(", ")}.`,
+      ),
+    );
+    process.exit(1);
+  }
+  const encoding = encodingRaw as TokenEncoding;
 
   const removeComments = opts.removeComments ?? config.removeComments ?? false;
   const removeEmptyLines =
@@ -508,7 +568,19 @@ async function main() {
       sortMode: (sortMode === "path" ? "path" : "given") as "path" | "given",
       gitDiff: gitDiffText,
       gitLog: gitLogText,
+      redact,
+      encoding,
     };
+
+    if (scanResult.suspiciousSkipped.length > 0) {
+      console.error(
+        chalk.yellow(
+          `🔒 Excluded ${scanResult.suspiciousSkipped.length} credential-shaped file(s): ${scanResult.suspiciousSkipped
+            .slice(0, 5)
+            .join(", ")}${scanResult.suspiciousSkipped.length > 5 ? ", …" : ""}`,
+        ),
+      );
+    }
 
     let { output, totalTokens, fileTokenStats, dirTokenMap } = formatOutput(
       files,
@@ -655,6 +727,15 @@ async function main() {
       );
       for (const entry of hogEntries) {
         console.error(formatHogEntry(entry, totalTokens));
+      }
+      console.error("");
+    }
+
+    if (opts.fit) {
+      console.error("");
+      console.error(chalk.cyan("Context Window Fit"));
+      for (const line of renderFitReport(totalTokens)) {
+        console.error(line);
       }
       console.error("");
     }
