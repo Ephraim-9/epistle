@@ -18,8 +18,17 @@ import {
 } from "./lib/formatter.js";
 import { initConfig, loadConfig, CONFIG_FILE_NAME } from "./lib/config.js";
 import { transformContent } from "./lib/compress.js";
+import {
+  getChangedFiles,
+  getChurnCounts,
+  getDiffText,
+  getLogText,
+  isGitRepo,
+} from "./lib/git.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
+
+type SortMode = "path" | "churn" | "size";
 const TOKEN_BUDGET_WARNING = 50000;
 
 type HogMode = "files" | "dirs" | "auto";
@@ -124,6 +133,22 @@ async function main() {
       "Drop the largest files until output fits within this token budget",
     )
     .option(
+      "--diff [ref]",
+      "Pack only files changed vs ref (default HEAD), including untracked files",
+    )
+    .option(
+      "--include-diffs",
+      "Append working-tree and staged git diffs to the output",
+    )
+    .option(
+      "--include-logs [count]",
+      "Append recent commit history to the output (default: 20 commits)",
+    )
+    .option(
+      "--sort <mode>",
+      'File order: "path" (default), "churn" (most-edited last), or "size" (largest last)',
+    )
+    .option(
       "--max-file-size <kb>",
       "Skip files larger than this many kilobytes (default: 100)",
     )
@@ -158,6 +183,10 @@ async function main() {
     removeEmptyLines?: boolean;
     compress?: boolean;
     maxTokens?: string;
+    diff?: string | boolean;
+    includeDiffs?: boolean;
+    includeLogs?: string | boolean;
+    sort?: string;
     dryRun?: boolean;
     config?: string;
     init?: boolean;
@@ -224,6 +253,36 @@ async function main() {
   const task = opts.task ?? config.task;
   const copy = opts.copy ?? config.output?.copy ?? false;
   const lineNumbers = opts.lineNumbers ?? config.output?.lineNumbers ?? false;
+
+  const sortMode = (opts.sort ?? config.sort ?? "path").toLowerCase() as SortMode;
+  if (sortMode !== "path" && sortMode !== "churn" && sortMode !== "size") {
+    console.error(
+      chalk.red(
+        `Invalid --sort value "${opts.sort}". Supported values: path, churn, size.`,
+      ),
+    );
+    process.exit(1);
+  }
+
+  const includeDiffs = opts.includeDiffs ?? config.includeDiffs ?? false;
+  const includeLogsRaw = opts.includeLogs ?? config.includeLogs;
+  let includeLogsCount: number | undefined;
+  if (includeLogsRaw !== undefined && includeLogsRaw !== false) {
+    if (includeLogsRaw === true) {
+      includeLogsCount = 20;
+    } else {
+      const parsed = Number(includeLogsRaw);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        console.error(
+          chalk.red(
+            `Invalid --include-logs value "${includeLogsRaw}". Provide a positive commit count.`,
+          ),
+        );
+        process.exit(1);
+      }
+      includeLogsCount = Math.floor(parsed);
+    }
+  }
 
   const removeComments = opts.removeComments ?? config.removeComments ?? false;
   const removeEmptyLines =
@@ -342,13 +401,81 @@ async function main() {
       }
     }
 
-    const { files, ignoredEntries } = await scanProject({
+    const scanResult = await scanProject({
       rootDir,
       scanPaths,
       excludeGlobs,
       includeGlobs: [...(config.include ?? []), ...(opts.include ?? [])],
       maxFileSizeBytes: maxFileSizeKB * 1024,
     });
+    let files = scanResult.files;
+    const { ignoredEntries } = scanResult;
+
+    // Git-aware features
+    const needsGit =
+      opts.diff !== undefined ||
+      includeDiffs ||
+      includeLogsCount !== undefined ||
+      sortMode === "churn";
+    let gitAvailable = false;
+    if (needsGit) {
+      gitAvailable = await isGitRepo(rootDir);
+      if (!gitAvailable && opts.diff !== undefined) {
+        throw new Error(
+          "--diff requires a git repository, but none was found at " + rootDir,
+        );
+      }
+      if (!gitAvailable) {
+        console.error(
+          chalk.yellow(
+            "Warning: not a git repository; git-based options were skipped.",
+          ),
+        );
+      }
+    }
+
+    if (opts.diff !== undefined && gitAvailable) {
+      const ref = typeof opts.diff === "string" ? opts.diff : "HEAD";
+      const changed = await getChangedFiles(rootDir, ref);
+      if (changed === undefined) {
+        throw new Error(
+          `Could not compute changed files vs "${ref}". Is the ref valid?`,
+        );
+      }
+      const changedSet = new Set(changed);
+      files = files.filter((f) => changedSet.has(f.path));
+      console.error(
+        chalk.cyan(
+          `Δ Diff mode: packing ${files.length} changed file(s) vs ${ref}.`,
+        ),
+      );
+    }
+
+    if (sortMode === "churn" && gitAvailable) {
+      const churn = (await getChurnCounts(rootDir)) ?? new Map<string, number>();
+      // Most-edited files LAST: LLMs weight the end of context most heavily
+      files = [...files].sort(
+        (a, b) =>
+          (churn.get(a.path) ?? 0) - (churn.get(b.path) ?? 0) ||
+          a.path.localeCompare(b.path),
+      );
+    } else if (sortMode === "size") {
+      files = [...files].sort(
+        (a, b) => a.sizeBytes - b.sizeBytes || a.path.localeCompare(b.path),
+      );
+    }
+
+    let gitDiffText: string | undefined;
+    if (includeDiffs && gitAvailable) {
+      gitDiffText = await getDiffText(rootDir);
+      if (!gitDiffText) gitDiffText = undefined;
+    }
+
+    let gitLogText: string | undefined;
+    if (includeLogsCount !== undefined && gitAvailable) {
+      gitLogText = await getLogText(rootDir, includeLogsCount);
+      if (!gitLogText) gitLogText = undefined;
+    }
 
     // Content-shaping transforms (comment stripping, blank lines, compression)
     let originalChars = 0;
@@ -378,6 +505,9 @@ async function main() {
       task,
       lineNumbers,
       maxFileSizeKB,
+      sortMode: (sortMode === "path" ? "path" : "given") as "path" | "given",
+      gitDiff: gitDiffText,
+      gitLog: gitLogText,
     };
 
     let { output, totalTokens, fileTokenStats, dirTokenMap } = formatOutput(

@@ -22,6 +22,12 @@ export interface FormatOptions {
   lineNumbers?: boolean;
   /** Used for the "skipped" message on oversized files */
   maxFileSizeKB?: number;
+  /** "path" (default) sorts alphabetically; "given" preserves caller order */
+  sortMode?: "path" | "given";
+  /** Unified diff text appended as a Git Diff section */
+  gitDiff?: string;
+  /** Recent commit lines appended as a Recent Commits section */
+  gitLog?: string;
 }
 
 interface TreeNode {
@@ -355,7 +361,10 @@ export function formatOutput(
   dirTokenMap: DirectoryTokenMap;
 } {
   const maxFileSizeKB = options.maxFileSizeKB ?? 100;
-  const sortedFiles = [...files].sort((a, b) => a.path.localeCompare(b.path));
+  const sortedFiles =
+    options.sortMode === "given"
+      ? [...files]
+      : [...files].sort((a, b) => a.path.localeCompare(b.path));
 
   const tree = buildTree(sortedFiles);
   const treeText = renderTree(tree, maxFileSizeKB);
@@ -435,6 +444,8 @@ export function formatOutput(
             : contentFor(file),
       })),
       task: options.task && options.task.trim().length > 0 ? options.task : null,
+      gitDiff: options.gitDiff || null,
+      gitLog: options.gitLog || null,
     };
     return {
       output: JSON.stringify(payload, null, 2),
@@ -467,6 +478,22 @@ export function formatOutput(
       } else {
         parts.push(contentFor(file));
       }
+      parts.push("");
+    }
+
+    if (options.gitLog) {
+      parts.push(sep);
+      parts.push("RECENT COMMITS");
+      parts.push(sep);
+      parts.push(options.gitLog);
+      parts.push("");
+    }
+
+    if (options.gitDiff) {
+      parts.push(sep);
+      parts.push("GIT DIFF (uncommitted changes)");
+      parts.push(sep);
+      parts.push(options.gitDiff);
       parts.push("");
     }
 
@@ -506,6 +533,18 @@ export function formatOutput(
       } else {
         parts.push(`<file ${attrs}>${xmlEscape(contentFor(file))}</file>`);
       }
+    }
+
+    if (options.gitLog) {
+      parts.push("<gitLog><![CDATA[");
+      parts.push(options.gitLog);
+      parts.push("]]></gitLog>");
+    }
+
+    if (options.gitDiff) {
+      parts.push("<gitDiff><![CDATA[");
+      parts.push(options.gitDiff);
+      parts.push("]]></gitDiff>");
     }
 
     parts.push("</epistle>");
@@ -554,6 +593,25 @@ export function formatOutput(
     mdParts.push("");
     mdParts.push(lang ? fence + lang : fence);
     mdParts.push(body);
+    mdParts.push(fence);
+    mdParts.push("");
+  }
+
+  if (options.gitLog) {
+    mdParts.push("## Recent Commits");
+    mdParts.push("");
+    mdParts.push("```");
+    mdParts.push(options.gitLog);
+    mdParts.push("```");
+    mdParts.push("");
+  }
+
+  if (options.gitDiff) {
+    const fence = fenceFor(options.gitDiff);
+    mdParts.push("## Git Diff (uncommitted changes)");
+    mdParts.push("");
+    mdParts.push(fence + "diff");
+    mdParts.push(options.gitDiff);
     mdParts.push(fence);
     mdParts.push("");
   }

@@ -26,6 +26,12 @@ export interface EpistleConfig {
   compress?: boolean;
   /** Drop lowest-priority files until output fits this many tokens */
   maxTokens?: number;
+  /** File ordering: "path", "churn" (most-edited last), or "size" (largest last) */
+  sort?: string;
+  /** Append working-tree and staged git diffs to the output */
+  includeDiffs?: boolean;
+  /** Append recent commit history (true for 20 commits, or a number) */
+  includeLogs?: boolean | number;
 }
 
 export const CONFIG_FILE_NAME = "epistle.config.json";

@@ -3,6 +3,38 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0] - 2026-07-07
+
+### Added
+- **`--diff [ref]`**: pack only files changed vs a ref (default HEAD),
+  including untracked files — a workflow gap in every competing tool.
+- **`--include-diffs`**: append working-tree and staged diffs to the output
+  (all four formats).
+- **`--include-logs [count]`**: append recent commit history (default 20).
+- **`--sort <mode>`**: `path` (default), `churn` (most-edited files last —
+  LLMs attend most to the end of context), or `size` (largest last).
+- All git options configurable via `epistle.config.json`
+  (`sort`, `includeDiffs`, `includeLogs`).
+- Graceful degradation outside git repos (warning; `--diff` errors).
+- Git module test suite against real temp repositories (28 tests total).
+
+## [0.5.0] - 2026-07-07
+
+### Added
+- **`--remove-comments`**: comment stripping with a string-literal-safe
+  state machine for C-like languages; also hash languages, HTML/XML, CSS,
+  SQL, Lua.
+- **`--remove-empty-lines`**: blank-line removal.
+- **`--compress`**: dependency-free signature-only compression
+  (imports/exports, class/function/type declarations kept; bodies elided)
+  for TS/JS/Python/Go/Rust/Java/C#/Kotlin/Swift. ~77% token reduction
+  measured on this repository.
+- **`--max-tokens <count>`**: fit-to-budget enforcement that drops the
+  heaviest files (never `package.json`), marks omissions in the tree and
+  file sections, and reports what was cut.
+- All four options available in `epistle.config.json`.
+- Content-shaping savings reported after packing.
+
 ## [0.4.0] - 2026-07-07
 
 ### Added
