@@ -1,6 +1,6 @@
 {
   "name": "epistle",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Epistle – a production-grade Node.js CLI that packs a local codebase into a single, LLM-friendly context file.",
   "private": false,
   "bin": {
@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/bin.ts",
     "start": "node dist/bin.js",
+    "test": "node --import tsx --test test/*.test.ts",
     "lint": "eslint \"src/**/*.{ts,tsx}\" || echo \"No ESLint configured\""
   },
   "engines": {

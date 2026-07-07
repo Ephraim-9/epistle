@@ -1,8 +1,21 @@
 import path from "node:path";
-import { encodingForModel } from "js-tiktoken";
+import { getEncoding, type TiktokenEncoding } from "js-tiktoken";
 import type { ScannedFile } from "./scanner.js";
+import { redactSecrets } from "./secrets.js";
 
-export type OutputFormat = "markdown" | "xml";
+export { redactSecrets };
+
+export const TOKEN_ENCODINGS = ["o200k_base", "cl100k_base"] as const;
+export type TokenEncoding = (typeof TOKEN_ENCODINGS)[number];
+
+export type OutputFormat = "markdown" | "xml" | "plain" | "json";
+
+export const OUTPUT_FORMATS: OutputFormat[] = [
+  "markdown",
+  "xml",
+  "plain",
+  "json",
+];
 
 export type PersonaType = "architect" | "security" | "refactor";
 
@@ -11,6 +24,20 @@ export interface FormatOptions {
   rootDir: string;
   persona?: PersonaType;
   task?: string;
+  /** Prefix each content line with its line number */
+  lineNumbers?: boolean;
+  /** Used for the "skipped" message on oversized files */
+  maxFileSizeKB?: number;
+  /** "path" (default) sorts alphabetically; "given" preserves caller order */
+  sortMode?: "path" | "given";
+  /** Unified diff text appended as a Git Diff section */
+  gitDiff?: string;
+  /** Recent commit lines appended as a Recent Commits section */
+  gitLog?: string;
+  /** Redact detected secrets (default true) */
+  redact?: boolean;
+  /** Tokenizer encoding for token counts (default o200k_base) */
+  encoding?: TokenEncoding;
 }
 
 interface TreeNode {
@@ -51,7 +78,7 @@ function buildTree(files: ScannedFile[]): TreeNode {
   return root;
 }
 
-function renderTree(node: TreeNode, prefix = ""): string {
+function renderTree(node: TreeNode, maxFileSizeKB: number, prefix = ""): string {
   const lines: string[] = [];
   const entries = Array.from(node.children.values()).sort((a, b) =>
     a.name.localeCompare(b.name),
@@ -67,47 +94,22 @@ function renderTree(node: TreeNode, prefix = ""): string {
       if (child.file.isBinary) {
         label += " [binary]";
       } else if (child.file.isOversized) {
-        label += " [skipped >100KB]";
+        label += ` [skipped >${maxFileSizeKB}KB]`;
+      } else if (child.file.isOmitted) {
+        label += " [omitted: token budget]";
       }
     }
 
     lines.push(prefix + branch + label);
     if (child.children.size > 0) {
-      lines.push(renderTree(child, nextPrefix));
+      lines.push(renderTree(child, maxFileSizeKB, nextPrefix));
     }
   });
 
   return lines.join("\n");
 }
 
-function getSecretPatterns(): RegExp[] {
-  // Intentionally focused on common API key / token shapes.
-  // We avoid generic long-token patterns to reduce false positives and
-  // deliberately do NOT match SHA/SRI-style tokens (sha256-/sha512-) or
-  // plain hex hashes.
-  return [
-    /sk-[A-Za-z0-9]{16,}/g, // OpenAI-style keys
-    /AKIA[0-9A-Z]{16}/g, // AWS access keys
-    /AIza[0-9A-Za-z\-_]{20,}/g, // Google API keys
-    /\b[A-Za-z0-9-_]{20,}\.[A-Za-z0-9-_]{20,}\.[A-Za-z0-9-_]{20,}\b/g, // JWT-like tokens
-  ];
-}
-
-export function redactSecrets(text: string): { redacted: string; count: number } {
-  let result = text;
-  let count = 0;
-  for (const re of getSecretPatterns()) {
-    const reCopy = new RegExp(re.source, re.flags);
-    result = result.replace(reCopy, () => {
-      count++;
-      return "[REDACTED_SECRET]";
-    });
-  }
-  return { redacted: result, count };
-}
-
 function inferLanguage(filePath: string): string | undefined {
-
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
     case ".ts":
@@ -116,6 +118,7 @@ function inferLanguage(filePath: string): string | undefined {
     case ".js":
     case ".cjs":
     case ".mjs":
+    case ".jsx":
       return "js";
     case ".json":
       return "json";
@@ -129,6 +132,38 @@ function inferLanguage(filePath: string): string | undefined {
       return "go";
     case ".rs":
       return "rust";
+    case ".rb":
+      return "ruby";
+    case ".php":
+      return "php";
+    case ".sh":
+    case ".bash":
+      return "bash";
+    case ".c":
+      return "c";
+    case ".h":
+    case ".cpp":
+    case ".cc":
+    case ".hpp":
+      return "cpp";
+    case ".cs":
+      return "csharp";
+    case ".swift":
+      return "swift";
+    case ".kt":
+      return "kotlin";
+    case ".sql":
+      return "sql";
+    case ".html":
+      return "html";
+    case ".css":
+      return "css";
+    case ".scss":
+      return "scss";
+    case ".xml":
+      return "xml";
+    case ".toml":
+      return "toml";
     case ".yml":
     case ".yaml":
       return "yaml";
@@ -137,8 +172,31 @@ function inferLanguage(filePath: string): string | undefined {
   }
 }
 
-function xmlEscape(value: string): string {
+/**
+ * Choose a code fence long enough to safely wrap content that itself
+ * contains backtick fences (files-to-prompt gets this right; most tools
+ * corrupt their own markdown output here).
+ */
+export function fenceFor(content: string): string {
+  let maxRun = 0;
+  const matches = content.match(/`{3,}/g);
+  if (matches) {
+    for (const m of matches) {
+      if (m.length > maxRun) maxRun = m.length;
+    }
+  }
+  return "`".repeat(Math.max(3, maxRun + 1));
+}
 
+export function addLineNumbers(content: string): string {
+  const lines = content.split("\n");
+  const width = String(lines.length).length;
+  return lines
+    .map((line, i) => `${String(i + 1).padStart(width)}: ${line}`)
+    .join("\n");
+}
+
+function xmlEscape(value: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -161,8 +219,9 @@ function getPersonaHeader(type: PersonaType): string {
 function computeFileTokenStats(
   files: ScannedFile[],
   redactedByPath: Map<string, string>,
+  encodingName: TokenEncoding = "o200k_base",
 ): { fileTokenStats: FileTokenStat[]; totalTokens: number } {
-  const encoding = encodingForModel("gpt-4o-mini");
+  const encoding = getEncoding(encodingName as TiktokenEncoding);
   const stats: FileTokenStat[] = [];
   let totalTokens = 0;
 
@@ -207,34 +266,9 @@ export function aggregateDirectoryTokens(
   return dirMap;
 }
 
-export function formatOutput(
-  files: ScannedFile[],
-  options: FormatOptions,
-): {
-  output: string;
-  totalTokens: number;
-  fileTokenStats: FileTokenStat[];
-  dirTokenMap: DirectoryTokenMap;
-} {
-  const sortedFiles = [...files].sort((a, b) => a.path.localeCompare(b.path));
-
-  const tree = buildTree(sortedFiles);
-  const treeText = renderTree(tree);
-
-  const totalFiles = sortedFiles.length;
-
-  const redactedByPath = new Map<string, string>();
-  let totalRedactions = 0;
-  for (const file of sortedFiles) {
-    if (file.content && !file.isBinary && !file.isOversized) {
-      const { redacted, count } = redactSecrets(file.content);
-      redactedByPath.set(file.path, redacted);
-      totalRedactions += count;
-    }
-  }
-
+function detectTechStack(files: ScannedFile[]): string[] {
   const techStack = new Set<string>();
-  const pkgFile = sortedFiles.find(
+  const pkgFile = files.find(
     (f) => f.path === "package.json" && typeof f.content === "string",
   );
   if (pkgFile?.content) {
@@ -248,7 +282,8 @@ export function formatOutput(
         ...(pkg.devDependencies ?? {}),
       };
 
-      const hasDep = (name: string) => Object.prototype.hasOwnProperty.call(deps, name);
+      const hasDep = (name: string) =>
+        Object.prototype.hasOwnProperty.call(deps, name);
 
       // Frontend frameworks
       if (hasDep("react")) techStack.add("React");
@@ -277,13 +312,75 @@ export function formatOutput(
     }
   }
 
-  function slugifyHeading(value: string): string {
-    return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  // Non-JS ecosystems, detected by manifest presence
+  const paths = new Set(files.map((f) => f.path));
+  if (paths.has("Cargo.toml")) techStack.add("Rust");
+  if (paths.has("go.mod")) techStack.add("Go");
+  if (paths.has("pyproject.toml") || paths.has("requirements.txt")) {
+    techStack.add("Python");
   }
+  if (paths.has("Gemfile")) techStack.add("Ruby");
+  if (paths.has("pom.xml") || paths.has("build.gradle")) techStack.add("Java");
+
+  return Array.from(techStack).sort();
+}
+
+function slugifyHeading(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function unavailableNote(file: ScannedFile, maxFileSizeKB: number): string {
+  if (file.isBinary) return "(binary file, contents not included)";
+  if (file.isOversized) return `(file >${maxFileSizeKB}KB, contents skipped)`;
+  if (file.isOmitted) return "(omitted to fit token budget)";
+  return "(no content)";
+}
+
+export function formatOutput(
+  files: ScannedFile[],
+  options: FormatOptions,
+): {
+  output: string;
+  totalTokens: number;
+  fileTokenStats: FileTokenStat[];
+  dirTokenMap: DirectoryTokenMap;
+  treeText: string;
+} {
+  const maxFileSizeKB = options.maxFileSizeKB ?? 100;
+  const sortedFiles =
+    options.sortMode === "given"
+      ? [...files]
+      : [...files].sort((a, b) => a.path.localeCompare(b.path));
+
+  const tree = buildTree(sortedFiles);
+  const treeText = renderTree(tree, maxFileSizeKB);
+
+  const totalFiles = sortedFiles.length;
+
+  const shouldRedact = options.redact !== false;
+  const redactedByPath = new Map<string, string>();
+  let totalRedactions = 0;
+  if (shouldRedact) {
+    for (const file of sortedFiles) {
+      if (file.content && !file.isBinary && !file.isOversized) {
+        const { redacted, count } = redactSecrets(file.content);
+        redactedByPath.set(file.path, redacted);
+        totalRedactions += count;
+      }
+    }
+  }
+
+  const contentFor = (file: ScannedFile): string => {
+    const base = redactedByPath.get(file.path) ?? file.content ?? "";
+    return options.lineNumbers ? addLineNumbers(base) : base;
+  };
+
+  const techStack = detectTechStack(sortedFiles);
 
   const { fileTokenStats, totalTokens } = computeFileTokenStats(
     sortedFiles,
     redactedByPath,
+    options.encoding,
   );
   const dirTokenMap = aggregateDirectoryTokens(fileTokenStats);
 
@@ -294,15 +391,17 @@ export function formatOutput(
   headerLines.push(`Root: ${options.rootDir}`);
   headerLines.push(`Total Files: ${totalFiles}`);
   headerLines.push(`Total Tokens: ${totalTokens}`);
-  if (techStack.size > 0) {
-    const techStackLine =
-      "Tech Stack: " + Array.from(techStack).sort().join(", ");
-    headerLines.push(techStackLine);
+  if (techStack.length > 0) {
+    headerLines.push("Tech Stack: " + techStack.join(", "));
   }
   if (options.task && options.task.trim().length > 0) {
     headerLines.push("Task Status: Pending (See end of file)");
   }
-  if (totalRedactions > 0) {
+  if (!shouldRedact) {
+    headerLines.push(
+      "Safety: Secret redaction was DISABLED (--no-redact). Review before sharing.",
+    );
+  } else if (totalRedactions > 0) {
     headerLines.push(
       `Safety: ${totalRedactions} secrets were detected and automatically redacted.`,
     );
@@ -313,6 +412,96 @@ export function formatOutput(
   }
 
   const headerText = headerLines.join("\n");
+
+  if (options.format === "json") {
+    const payload = {
+      metadata: {
+        root: options.rootDir,
+        totalFiles,
+        totalTokens,
+        techStack,
+        persona: options.persona ?? null,
+        redactedSecrets: totalRedactions,
+        generator: "epistle",
+      },
+      tree: treeText,
+      files: sortedFiles.map((file) => ({
+        path: file.path,
+        tokens:
+          fileTokenStats.find((s) => s.path === file.path)?.tokens ?? 0,
+        binary: file.isBinary,
+        oversized: file.isOversized,
+        omitted: file.isOmitted ?? false,
+        content:
+          !file.content || file.isBinary || file.isOversized
+            ? null
+            : contentFor(file),
+      })),
+      task: options.task && options.task.trim().length > 0 ? options.task : null,
+      gitDiff: options.gitDiff || null,
+      gitLog: options.gitLog || null,
+    };
+    return {
+      output: JSON.stringify(payload, null, 2),
+      totalTokens,
+      fileTokenStats,
+      dirTokenMap,
+      treeText,
+    };
+  }
+
+  if (options.format === "plain") {
+    const sep = "=".repeat(48);
+    const parts: string[] = [];
+    parts.push(sep);
+    parts.push("EPISTLE CONTEXT");
+    parts.push(sep);
+    parts.push(headerText);
+    parts.push("");
+    parts.push(sep);
+    parts.push("DIRECTORY STRUCTURE");
+    parts.push(sep);
+    parts.push(treeText);
+    parts.push("");
+
+    for (const file of sortedFiles) {
+      parts.push(sep);
+      parts.push(`File: ${file.path}`);
+      parts.push(sep);
+      if (!file.content || file.isBinary || file.isOversized) {
+        parts.push(unavailableNote(file, maxFileSizeKB));
+      } else {
+        parts.push(contentFor(file));
+      }
+      parts.push("");
+    }
+
+    if (options.gitLog) {
+      parts.push(sep);
+      parts.push("RECENT COMMITS");
+      parts.push(sep);
+      parts.push(options.gitLog);
+      parts.push("");
+    }
+
+    if (options.gitDiff) {
+      parts.push(sep);
+      parts.push("GIT DIFF (uncommitted changes)");
+      parts.push(sep);
+      parts.push(options.gitDiff);
+      parts.push("");
+    }
+
+    if (options.task && options.task.trim().length > 0) {
+      parts.push(sep);
+      parts.push("USER TASK / INSTRUCTIONS");
+      parts.push(sep);
+      parts.push(options.task);
+      parts.push("");
+    }
+
+    return { output: parts.join("\n"), totalTokens, fileTokenStats, dirTokenMap, treeText };
+  }
 
   if (options.format === "xml") {
     const parts: string[] = [];
@@ -333,21 +522,28 @@ export function formatOutput(
     for (const file of sortedFiles) {
       const attrs = `path="${xmlEscape(file.path)}"`;
       if (!file.content || file.isBinary || file.isOversized) {
-        const note = file.isBinary
-          ? "(binary file, contents not included)"
-          : file.isOversized
-            ? "(file >100KB, contents skipped)"
-            : "(no content)";
-        parts.push(`<file ${attrs}>${xmlEscape(note)}</file>`);
-      } else {
         parts.push(
-          `<file ${attrs}>${xmlEscape(redactedByPath.get(file.path) ?? file.content)}</file>`,
+          `<file ${attrs}>${xmlEscape(unavailableNote(file, maxFileSizeKB))}</file>`,
         );
+      } else {
+        parts.push(`<file ${attrs}>${xmlEscape(contentFor(file))}</file>`);
       }
     }
 
+    if (options.gitLog) {
+      parts.push("<gitLog><![CDATA[");
+      parts.push(options.gitLog);
+      parts.push("]]></gitLog>");
+    }
+
+    if (options.gitDiff) {
+      parts.push("<gitDiff><![CDATA[");
+      parts.push(options.gitDiff);
+      parts.push("]]></gitDiff>");
+    }
+
     parts.push("</epistle>");
-    return { output: parts.join("\n"), totalTokens, fileTokenStats, dirTokenMap };
+    return { output: parts.join("\n"), totalTokens, fileTokenStats, dirTokenMap, treeText };
   }
 
   // Markdown format (default)
@@ -380,37 +576,50 @@ export function formatOutput(
     const slug = slugifyHeading(file.path);
     mdParts.push(`## ${file.path} {#${slug}}`);
     if (!file.content || file.isBinary || file.isOversized) {
-      if (file.isBinary) {
-        mdParts.push("");
-        mdParts.push("(binary file, contents not included)");
-      } else if (file.isOversized) {
-        mdParts.push("");
-        mdParts.push("(file >100KB, contents skipped)");
-      } else {
-        mdParts.push("");
-        mdParts.push("(no content)");
-      }
+      mdParts.push("");
+      mdParts.push(unavailableNote(file, maxFileSizeKB));
       mdParts.push("");
       continue;
     }
 
+    const body = contentFor(file);
     const lang = inferLanguage(file.path);
+    const fence = fenceFor(body);
     mdParts.push("");
-    mdParts.push(lang ? "```" + lang : "```");
-    mdParts.push(redactedByPath.get(file.path) ?? file.content);
+    mdParts.push(lang ? fence + lang : fence);
+    mdParts.push(body);
+    mdParts.push(fence);
+    mdParts.push("");
+  }
+
+  if (options.gitLog) {
+    mdParts.push("## Recent Commits");
+    mdParts.push("");
     mdParts.push("```");
+    mdParts.push(options.gitLog);
+    mdParts.push("```");
+    mdParts.push("");
+  }
+
+  if (options.gitDiff) {
+    const fence = fenceFor(options.gitDiff);
+    mdParts.push("## Git Diff (uncommitted changes)");
+    mdParts.push("");
+    mdParts.push(fence + "diff");
+    mdParts.push(options.gitDiff);
+    mdParts.push(fence);
     mdParts.push("");
   }
 
   if (options.task && options.task.trim().length > 0) {
+    const fence = fenceFor(options.task);
     mdParts.push("## User Task / Instructions");
     mdParts.push("");
-    mdParts.push("```");
+    mdParts.push(fence);
     mdParts.push(options.task);
-    mdParts.push("```");
+    mdParts.push(fence);
     mdParts.push("");
   }
 
-  return { output: mdParts.join("\n"), totalTokens, fileTokenStats, dirTokenMap };
+  return { output: mdParts.join("\n"), totalTokens, fileTokenStats, dirTokenMap, treeText };
 }
-
