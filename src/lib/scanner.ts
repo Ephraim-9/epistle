@@ -23,6 +23,8 @@ export interface ScannedFile {
 export interface ScannerOptions {
   /** Directory to scan; usually the current working directory */
   rootDir: string;
+  /** Restrict scanning to these paths (files or directories) relative to rootDir */
+  scanPaths?: string[];
   /** Extra glob patterns to exclude (from --exclude) */
   excludeGlobs?: string[];
   /** Glob patterns to force-include after ignore/exclude filtering */
@@ -39,7 +41,60 @@ export interface ScanProjectResult {
   ignoredEntries: number;
 }
 
-const DEFAULT_MAX_FILE_SIZE_BYTES = 100 * 1024;
+export const DEFAULT_MAX_FILE_SIZE_BYTES = 100 * 1024;
+
+/** Patterns always excluded regardless of ignore files. */
+export const DEFAULT_IGNORE_PATTERNS = [
+  "node_modules/**",
+  ".git/**",
+  "dist/**",
+  "build/**",
+  "coverage/**",
+  ".next/**",
+  ".nuxt/**",
+  ".venv/**",
+  "__pycache__/**",
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "bun.lockb",
+  "Cargo.lock",
+  "poetry.lock",
+  "uv.lock",
+  "composer.lock",
+  "Gemfile.lock",
+  "**/*.min.js",
+  "**/*.min.css",
+  "**/*.map",
+  "**/*.svg",
+  "**/*.png",
+  "**/*.jpg",
+  "**/*.jpeg",
+  "**/*.gif",
+  "**/*.ico",
+  "**/*.woff",
+  "**/*.woff2",
+  "**/*.ttf",
+  "**/*.otf",
+  "**/*.eot",
+  "**/*.pdf",
+  "**/*.zip",
+  "**/*.gz",
+  "**/*.tar",
+  "**/.DS_Store",
+  "context.md",
+  "codebase.md",
+  "digest.txt",
+  "epistle-*.md",
+  "epistle-*.xml",
+  "epistle-*.json",
+  "epistle-*.txt",
+  "context.xml",
+  "codebase.xml",
+];
+
+/** Ignore files honored at the project root, in priority order. */
+const ROOT_IGNORE_FILES = [".gitignore", ".llmignore", ".epistleignore"];
 
 async function readIgnoreFile(filePath: string): Promise<string[]> {
   try {
@@ -53,34 +108,116 @@ async function readIgnoreFile(filePath: string): Promise<string[]> {
   }
 }
 
-async function buildIgnore(
-  rootDir: string,
-  extraExcludeGlobs: string[] | undefined,
-): Promise<Ignore> {
+function createIgnore(): Ignore {
   // The ignore package exports a factory function as the default export (CJS),
   // which is exposed as `.default` when imported from ESM.
   const factory = ignoreLib as unknown as { default: () => Ignore };
-  const ig = factory.default();
+  return factory.default();
+}
 
-  const gitignorePath = path.join(rootDir, ".gitignore");
-  const llmignorePath = path.join(rootDir, ".llmignore");
+interface NestedIgnore {
+  /** Directory (relative to root, forward slashes, no trailing slash) the ignore file lives in */
+  base: string;
+  ig: Ignore;
+}
 
-  const [gitPatterns, llmPatterns] = await Promise.all([
-    readIgnoreFile(gitignorePath),
-    readIgnoreFile(llmignorePath),
-  ]);
+async function buildRootIgnore(
+  rootDir: string,
+  extraExcludeGlobs: string[] | undefined,
+): Promise<Ignore> {
+  const ig = createIgnore();
 
-  if (gitPatterns.length > 0) {
-    ig.add(gitPatterns);
+  for (const name of ROOT_IGNORE_FILES) {
+    const patterns = await readIgnoreFile(path.join(rootDir, name));
+    if (patterns.length > 0) {
+      ig.add(patterns);
+    }
   }
-  if (llmPatterns.length > 0) {
-    ig.add(llmPatterns);
-  }
+
   if (extraExcludeGlobs && extraExcludeGlobs.length > 0) {
     ig.add(extraExcludeGlobs);
   }
 
   return ig;
+}
+
+/**
+ * Build ignore matchers for .gitignore files in subdirectories, so monorepos
+ * and nested packages are filtered correctly (like git itself does).
+ */
+async function buildNestedIgnores(
+  rootDir: string,
+  entries: string[],
+): Promise<NestedIgnore[]> {
+  const nested: NestedIgnore[] = [];
+
+  const gitignoreEntries = entries.filter(
+    (rel) => rel !== ".gitignore" && rel.endsWith("/.gitignore"),
+  );
+
+  for (const rel of gitignoreEntries) {
+    const base = rel.slice(0, -"/.gitignore".length);
+    const patterns = await readIgnoreFile(path.join(rootDir, rel));
+    if (patterns.length === 0) continue;
+    const ig = createIgnore();
+    ig.add(patterns);
+    nested.push({ base, ig });
+  }
+
+  return nested;
+}
+
+function isIgnoredByNested(
+  relPath: string,
+  nestedIgnores: NestedIgnore[],
+): boolean {
+  for (const { base, ig } of nestedIgnores) {
+    const prefix = base + "/";
+    if (relPath.startsWith(prefix)) {
+      const sub = relPath.slice(prefix.length);
+      if (sub && ig.ignores(sub)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Convert user-supplied scan paths (files or directories) into glob patterns
+ * scoped to rootDir. Throws for paths that escape the root or do not exist.
+ */
+async function scanPathsToPatterns(
+  rootDir: string,
+  scanPaths: string[],
+): Promise<string[]> {
+  const patterns: string[] = [];
+
+  for (const p of scanPaths) {
+    const abs = path.resolve(rootDir, p);
+    const rel = path.relative(rootDir, abs);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      throw new Error(
+        `Path "${p}" is outside the project root. Run epistle from a common parent directory instead.`,
+      );
+    }
+
+    let stat;
+    try {
+      stat = await fs.stat(abs);
+    } catch {
+      throw new Error(`Path "${p}" does not exist.`);
+    }
+
+    const relPosix = rel.split(path.sep).join(path.posix.sep);
+    if (stat.isDirectory()) {
+      patterns.push(relPosix === "" ? "**/*" : `${relPosix}/**/*`);
+    } else {
+      patterns.push(relPosix);
+    }
+  }
+
+  return patterns;
 }
 
 export async function scanProject(options: ScannerOptions): Promise<ScanProjectResult> {
@@ -89,36 +226,28 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
   const excludeGlobs = options.excludeGlobs ?? [];
   const includeGlobs = options.includeGlobs ?? [];
 
-  const ig = await buildIgnore(rootDir, excludeGlobs);
+  const ig = await buildRootIgnore(rootDir, excludeGlobs);
 
-  const allEntries = await fg("**/*", {
+  const scanPatterns =
+    options.scanPaths && options.scanPaths.length > 0
+      ? await scanPathsToPatterns(rootDir, options.scanPaths)
+      : ["**/*"];
+
+  const allEntries = await fg(scanPatterns, {
     cwd: rootDir,
     dot: true,
     onlyFiles: true,
     unique: true,
     followSymbolicLinks: false,
-    ignore: [
-      "node_modules/**",
-      ".git/**",
-      "dist/**",
-      "package-lock.json",
-      "yarn.lock",
-      "pnpm-lock.yaml",
-      "bun.lockb",
-      "**/*.svg",
-      "**/*.png",
-      "**/*.jpg",
-      "context.md",
-      "codebase.md",
-      "epistle-context.md",
-      "epistle-context.xml",
-      "context.xml",
-      "codebase.xml",
-      "v*_test.md",
-    ],
+    ignore: DEFAULT_IGNORE_PATTERNS,
   });
 
-  let filteredEntries = allEntries.filter((relative) => !ig.ignores(relative));
+  const nestedIgnores = await buildNestedIgnores(rootDir, allEntries);
+
+  let filteredEntries = allEntries.filter(
+    (relative) =>
+      !ig.ignores(relative) && !isIgnoredByNested(relative, nestedIgnores),
+  );
 
   if (includeGlobs.length > 0) {
     const includeEntries = await fg(includeGlobs, {
@@ -129,10 +258,7 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
       followSymbolicLinks: false,
     });
 
-    const merged = new Set<string>();
-    for (const rel of filteredEntries) {
-      merged.add(rel);
-    }
+    const merged = new Set<string>(filteredEntries);
     for (const rel of includeEntries) {
       merged.add(rel);
     }
@@ -217,4 +343,3 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
     ignoredEntries,
   };
 }
-

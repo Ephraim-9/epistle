@@ -10,12 +10,15 @@ import gradient from "gradient-string";
 import { scanProject } from "./lib/scanner.js";
 import {
   formatOutput,
+  OUTPUT_FORMATS,
   type DirectoryTokenMap,
   type FileTokenStat,
   type OutputFormat,
   type PersonaType,
 } from "./lib/formatter.js";
+import { initConfig, loadConfig, CONFIG_FILE_NAME } from "./lib/config.js";
 
+const VERSION = "0.4.0";
 const TOKEN_BUDGET_WARNING = 50000;
 
 type HogMode = "files" | "dirs" | "auto";
@@ -46,6 +49,19 @@ function personaToDefaultSlug(persona: PersonaType): string {
   return slugs[persona];
 }
 
+function extensionForFormat(format: OutputFormat): string {
+  switch (format) {
+    case "xml":
+      return ".xml";
+    case "json":
+      return ".json";
+    case "plain":
+      return ".txt";
+    default:
+      return ".md";
+  }
+}
+
 async function main() {
   const program = new Command();
 
@@ -53,6 +69,10 @@ async function main() {
     .name("epistle")
     .description(
       "Pack a local codebase into a single, LLM-friendly context file.",
+    )
+    .argument(
+      "[paths...]",
+      "Files or directories to pack (default: current directory)",
     )
     .option("-o, --output <file>", "Output file path")
     .option("-c, --copy", "Copy the generated context to the clipboard")
@@ -68,11 +88,13 @@ async function main() {
       "-t, --task <instruction>",
       "User task or instructions to attach to the context",
     )
-    .option("--stdout", "Force writing output to stdout even when terminal is interactive")
+    .option(
+      "--stdout",
+      "Force writing output to stdout even when terminal is interactive",
+    )
     .option(
       "--format <format>",
-      'Output format: "markdown" (default) or "xml"',
-      "markdown",
+      'Output format: "markdown" (default), "xml", "plain", or "json"',
     )
     .option(
       "--persona <type>",
@@ -80,19 +102,31 @@ async function main() {
     )
     .option(
       "--clean",
-      "Delete existing context.md and epistle-*.md in project root before scanning",
+      "Delete existing context.md and epistle-* outputs in project root before scanning",
     )
     .option(
       "-l, --lite",
       "Enable lite mode: auto-prune heavy assets and data files",
     )
+    .option("-n, --line-numbers", "Prefix file contents with line numbers")
+    .option(
+      "--max-file-size <kb>",
+      "Skip files larger than this many kilobytes (default: 100)",
+    )
+    .option(
+      "--dry-run",
+      "Preview which files would be packed (with token counts) without writing output",
+    )
+    .option("--config <path>", `Path to config file (default: ${CONFIG_FILE_NAME})`)
+    .option("--init", "Create a starter epistle.config.json and exit")
     .option(
       "--hog-depth <value>",
       "Depth for context hog report: 0 (files), >0 (directories), or 'auto'",
     )
-    .version("0.3.0");
+    .version(VERSION);
 
   program.parse(process.argv);
+  const scanPaths = program.args;
   const opts = program.opts<{
     output?: string;
     copy?: boolean;
@@ -104,20 +138,51 @@ async function main() {
     stdout?: boolean;
     task?: string;
     lite?: boolean;
+    lineNumbers?: boolean;
+    maxFileSize?: string;
+    dryRun?: boolean;
+    config?: string;
+    init?: boolean;
     hogDepth?: string;
   }>();
 
-  const format = (opts.format ?? "markdown").toLowerCase() as OutputFormat;
-  if (format !== "markdown" && format !== "xml") {
+  const rootDir = process.cwd();
+
+  if (opts.init) {
+    try {
+      const configPath = await initConfig(rootDir);
+      console.error(chalk.green(`Created ${path.relative(rootDir, configPath)}`));
+      process.exit(0);
+    } catch (err) {
+      console.error(chalk.red((err as Error).message));
+      process.exit(1);
+    }
+  }
+
+  let config;
+  try {
+    ({ config } = await loadConfig(rootDir, opts.config));
+  } catch (err) {
+    console.error(chalk.red((err as Error).message));
+    process.exit(1);
+  }
+
+  // CLI flags win over config values
+  const format = (
+    opts.format ??
+    config.output?.format ??
+    "markdown"
+  ).toLowerCase() as OutputFormat;
+  if (!OUTPUT_FORMATS.includes(format)) {
     console.error(
       chalk.red(
-        `Invalid --format value "${opts.format}". Supported values are "markdown" and "xml".`,
+        `Invalid --format value "${opts.format ?? config.output?.format}". Supported values: ${OUTPUT_FORMATS.join(", ")}.`,
       ),
     );
     process.exit(1);
   }
 
-  const rawPersona = opts.persona?.toLowerCase();
+  const rawPersona = (opts.persona ?? config.persona)?.toLowerCase();
   let persona: PersonaType | undefined;
   if (rawPersona) {
     const resolved = resolvePersona(rawPersona);
@@ -130,11 +195,30 @@ async function main() {
     } else {
       console.error(
         chalk.red(
-          `Invalid --persona value "${opts.persona}". Supported values are "architect", "security", "refactor" (or aliases: arch, sec, ref).`,
+          `Invalid --persona value "${rawPersona}". Supported values are "architect", "security", "refactor" (or aliases: arch, sec, ref).`,
         ),
       );
       process.exit(1);
     }
+  }
+
+  const lite = opts.lite ?? config.lite ?? false;
+  const task = opts.task ?? config.task;
+  const copy = opts.copy ?? config.output?.copy ?? false;
+  const lineNumbers = opts.lineNumbers ?? config.output?.lineNumbers ?? false;
+
+  let maxFileSizeKB = config.maxFileSizeKB ?? 100;
+  if (opts.maxFileSize !== undefined) {
+    const parsed = Number(opts.maxFileSize);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      console.error(
+        chalk.red(
+          `Invalid --max-file-size value "${opts.maxFileSize}". Provide a positive number of kilobytes.`,
+        ),
+      );
+      process.exit(1);
+    }
+    maxFileSizeKB = parsed;
   }
 
   // High-end banner
@@ -142,23 +226,21 @@ async function main() {
   console.error(banner);
   console.error("");
 
-  const rootDir = process.cwd();
-
   let outputPath: string | undefined;
   let usedAutoOutput = false;
-  if (opts.output) {
-    outputPath = path.resolve(rootDir, opts.output);
+  const configuredOutput = opts.output ?? config.output?.file;
+  if (configuredOutput) {
+    outputPath = path.resolve(rootDir, configuredOutput);
   } else if (persona) {
-    const defaultName = `epistle-${personaToDefaultSlug(persona)}.md`;
+    const defaultName = `epistle-${personaToDefaultSlug(persona)}${extensionForFormat(format)}`;
     outputPath = path.join(rootDir, defaultName);
     usedAutoOutput = true;
   }
 
-  if (usedAutoOutput) {
-    const defaultName = `epistle-${personaToDefaultSlug(persona!)}.md`;
+  if (usedAutoOutput && !opts.dryRun) {
     console.error(
       chalk.cyan(
-        `🚀 No output specified. Using default: ${defaultName}`,
+        `🚀 No output specified. Using default: ${path.basename(outputPath!)}`,
       ),
     );
   }
@@ -168,14 +250,17 @@ async function main() {
   }).start();
 
   try {
-    const excludeGlobs: string[] = [...(opts.exclude ?? [])];
+    const excludeGlobs: string[] = [
+      ...(config.exclude ?? []),
+      ...(opts.exclude ?? []),
+    ];
 
     if (outputPath) {
       const outputRel = path.relative(rootDir, outputPath) || outputPath;
       excludeGlobs.push(outputRel);
     }
 
-    if (opts.lite) {
+    if (lite) {
       excludeGlobs.push(
         "**/*.css",
         "**/*.scss",
@@ -196,12 +281,15 @@ async function main() {
       excludeGlobs.push("!package.json");
     }
 
-    if (opts.clean) {
+    if (opts.clean && !opts.dryRun) {
       const toRemove: string[] = [path.join(rootDir, "context.md")];
       try {
         const entries = await fs.readdir(rootDir);
         for (const name of entries) {
-          if (name.startsWith("epistle-") && name.endsWith(".md")) {
+          if (
+            name.startsWith("epistle-") &&
+            /\.(md|xml|json|txt)$/.test(name)
+          ) {
             toRemove.push(path.join(rootDir, name));
           }
         }
@@ -219,8 +307,10 @@ async function main() {
 
     const { files, ignoredEntries } = await scanProject({
       rootDir,
+      scanPaths,
       excludeGlobs,
-      includeGlobs: opts.include,
+      includeGlobs: [...(config.include ?? []), ...(opts.include ?? [])],
+      maxFileSizeBytes: maxFileSizeKB * 1024,
     });
 
     spinner.text = chalk.cyan("Formatting output...");
@@ -228,12 +318,34 @@ async function main() {
     const { output, totalTokens, fileTokenStats, dirTokenMap } = formatOutput(
       files,
       {
-      format,
-      rootDir,
-      persona,
-      task: opts.task,
+        format,
+        rootDir,
+        persona,
+        task,
+        lineNumbers,
+        maxFileSizeKB,
       },
     );
+
+    if (opts.dryRun) {
+      spinner.succeed(chalk.green("Dry run complete. No output written."));
+      console.error("");
+      const sorted = [...fileTokenStats].sort((a, b) => b.tokens - a.tokens);
+      const pad = String(
+        sorted.length > 0 ? sorted[0].tokens : 0,
+      ).length;
+      for (const stat of sorted) {
+        console.error(
+          `  ${chalk.yellow(String(stat.tokens).padStart(pad))}  ${stat.path}`,
+        );
+      }
+      console.error("");
+      console.error(
+        `${chalk.cyan("Total:")} ${files.length} files, ${totalTokens} tokens` +
+          (ignoredEntries > 0 ? ` (${ignoredEntries} entries pruned)` : ""),
+      );
+      return;
+    }
 
     if (totalTokens > TOKEN_BUDGET_WARNING) {
       console.error(
@@ -260,7 +372,7 @@ async function main() {
       );
     }
 
-    if (opts.copy) {
+    if (copy) {
       try {
         await clipboardy.write(output);
       } catch (err) {
@@ -311,7 +423,10 @@ async function main() {
     // Dashboard summary box (stderr)
     let projectName: string = path.basename(rootDir);
     try {
-      const pkgRaw = await fs.readFile(path.join(rootDir, "package.json"), "utf8");
+      const pkgRaw = await fs.readFile(
+        path.join(rootDir, "package.json"),
+        "utf8",
+      );
       const pkg = JSON.parse(pkgRaw) as { name?: unknown };
       if (typeof pkg.name === "string" && pkg.name.trim().length > 0) {
         projectName = pkg.name;
@@ -329,7 +444,12 @@ async function main() {
             ? "Refactor"
             : "Default";
 
-    const taskPreview = "(none)";
+    const taskPreview =
+      task && task.trim().length > 0
+        ? task.length > 40
+          ? task.slice(0, 37) + "..."
+          : task
+        : "(none)";
 
     const tokenColor =
       totalTokens < 50000
@@ -346,7 +466,7 @@ async function main() {
     const lines: string[] = [];
     lines.push(`Project: ${projectName}`);
     lines.push(`Persona: ${personaLabel}`);
-    const modeLabel = opts.lite ? chalk.green("Lite") : "Full";
+    const modeLabel = lite ? chalk.green("Lite") : "Full";
     lines.push(`Mode: ${modeLabel}`);
     lines.push(statsLine);
     if (hogEntries.length > 0) {
@@ -449,7 +569,9 @@ function computeTopDirHogs(
   return entries.sort((a, b) => b.tokens - a.tokens).slice(0, limit);
 }
 
-function computeAutoDirDepth(dirTokenMap: DirectoryTokenMap): number | undefined {
+function computeAutoDirDepth(
+  dirTokenMap: DirectoryTokenMap,
+): number | undefined {
   const depths = new Set<number>();
   for (const [dirPath, tokens] of dirTokenMap.entries()) {
     if (dirPath === "") continue;
@@ -481,16 +603,13 @@ function computeHogsForProject(input: {
 
   if (hogMode === "dirs") {
     const d = depth ?? 1;
-    hogEntries.push(
-      ...computeTopDirHogs(input.dirTokenMap, d, 5),
-    );
+    hogEntries.push(...computeTopDirHogs(input.dirTokenMap, d, 5));
     return { hogMode, hogDepth: d, hogEntries };
   }
 
   // auto: mix of files and directories
   const topFiles = computeTopFileHogs(input.fileTokenStats, 3);
-  const autoDepth =
-    depth ?? computeAutoDirDepth(input.dirTokenMap) ?? 1;
+  const autoDepth = depth ?? computeAutoDirDepth(input.dirTokenMap) ?? 1;
   const topDirs = computeTopDirHogs(input.dirTokenMap, autoDepth, 2);
 
   hogEntries.push(...topFiles, ...topDirs);
@@ -499,8 +618,7 @@ function computeHogsForProject(input: {
 
 function formatHogEntry(entry: HogEntry, totalTokens: number): string {
   const icon = entry.isDir ? "📁" : "📄";
-  const pct =
-    totalTokens > 0 ? (entry.tokens / totalTokens) * 100 : 0;
+  const pct = totalTokens > 0 ? (entry.tokens / totalTokens) * 100 : 0;
   let pctLabel = `${pct.toFixed(1)}%`;
 
   if (pct > 20) {
@@ -513,4 +631,3 @@ function formatHogEntry(entry: HogEntry, totalTokens: number): string {
 }
 
 void main();
-
