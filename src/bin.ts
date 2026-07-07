@@ -32,7 +32,7 @@ import {
 import { getRecipe, recipeNames } from "./lib/recipes.js";
 import { applyProfile } from "./lib/config.js";
 
-const VERSION = "0.8.0";
+const VERSION = "1.0.0";
 
 type SortMode = "path" | "churn" | "size";
 

@@ -77,6 +77,18 @@ export const DEFAULT_CONFIG_TEMPLATE: EpistleConfig = {
   exclude: [],
   maxFileSizeKB: 100,
   lite: false,
+  profiles: {
+    tiny: {
+      compress: true,
+      removeComments: true,
+      removeEmptyLines: true,
+    },
+    "pr-review": {
+      includeDiffs: true,
+      includeLogs: 10,
+      sort: "churn",
+    },
+  },
 };
 
 export interface LoadConfigResult {

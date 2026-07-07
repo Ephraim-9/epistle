@@ -3,6 +3,18 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.0.0] - 2026-07-07
+
+### Added
+- Full README with quickstart, feature guide, and cross-tool comparison.
+- `--init` template now ships two example profiles (`tiny`, `pr-review`).
+
+### Notes
+- Feature-complete against the v0.4–v0.8 roadmap derived from the
+  competitive analysis in `docs/RESEARCH.md`. Watch mode, MCP server,
+  tree-sitter compression, and split-output were evaluated and
+  intentionally left out (rationale documented in the research doc).
+
 ## [0.8.0] - 2026-07-07
 
 ### Added

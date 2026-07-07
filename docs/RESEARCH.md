@@ -183,6 +183,14 @@ The most feature-complete tool in the space. Key capabilities:
 
 ## 4. Epistle Roadmap (derived)
 
+> **Status (2026-07-07): all milestones below shipped in v0.4.0–v1.0.0.**
+> Deliberately not built: watch mode and MCP server (Epistle is a
+> pack-once CLI; both would pull in daemon lifecycle concerns better
+> served by wrapping Epistle), tree-sitter compression (the zero-dependency
+> signature extractor achieves comparable reduction without native/wasm
+> install weight), and split-output (modern 200k+ windows and `--max-tokens`
+> cover the need).
+
 **v0.4.0 — Correctness + parity foundations**
 config file (`epistle.config.json` + `--init`), `.epistleignore`, nested
 `.gitignore`s, `plain` + `json` formats, smart fence nesting fix, positional
