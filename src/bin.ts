@@ -21,14 +21,18 @@ import {
 import { initConfig, loadConfig, CONFIG_FILE_NAME } from "./lib/config.js";
 import { transformContent } from "./lib/compress.js";
 import {
+  cloneRemote,
   getChangedFiles,
   getChurnCounts,
   getDiffText,
   getLogText,
   isGitRepo,
+  remoteRepoName,
 } from "./lib/git.js";
+import { getRecipe, recipeNames } from "./lib/recipes.js";
+import { applyProfile } from "./lib/config.js";
 
-const VERSION = "0.7.0";
+const VERSION = "0.8.0";
 
 type SortMode = "path" | "churn" | "size";
 
@@ -188,6 +192,21 @@ async function main() {
       "--fit",
       "Show how the pack fits into popular model context windows",
     )
+    .option("-q, --quiet", "Suppress all non-error console output")
+    .option("--verbose", "Print extra detail (config source, timings, prune counts)")
+    .option("--stdin", "Read file paths to pack from stdin (one per line)")
+    .option("-0, --null", "With --stdin: paths are NUL-separated (find -print0)")
+    .option("--tree-only", "Output only the directory tree, no file contents")
+    .option(
+      "--remote <url>",
+      "Pack a remote git repository (URL or user/repo shorthand)",
+    )
+    .option("--remote-branch <name>", "Branch, tag, or commit for --remote")
+    .option("--profile <name>", "Apply a named profile from the config file")
+    .option(
+      "--recipe <name>",
+      `Append a curated analysis prompt: ${recipeNames().join(" | ")}`,
+    )
     .option(
       "--max-file-size <kb>",
       "Skip files larger than this many kilobytes (default: 100)",
@@ -230,6 +249,15 @@ async function main() {
     redact?: boolean;
     encoding?: string;
     fit?: boolean;
+    quiet?: boolean;
+    verbose?: boolean;
+    stdin?: boolean;
+    null?: boolean;
+    treeOnly?: boolean;
+    remote?: string;
+    remoteBranch?: string;
+    profile?: string;
+    recipe?: string;
     dryRun?: boolean;
     config?: string;
     init?: boolean;
@@ -250,12 +278,27 @@ async function main() {
   }
 
   let config;
+  let configPathUsed: string | undefined;
   try {
-    ({ config } = await loadConfig(rootDir, opts.config));
+    const loaded = await loadConfig(rootDir, opts.config);
+    config = loaded.config;
+    configPathUsed = loaded.configPath;
+    if (opts.profile) {
+      config = applyProfile(config, opts.profile);
+    }
   } catch (err) {
     console.error(chalk.red((err as Error).message));
     process.exit(1);
   }
+
+  const quiet = opts.quiet ?? false;
+  const verboseMode = (opts.verbose ?? false) && !quiet;
+  const info = (...args: unknown[]) => {
+    if (!quiet) console.error(...args);
+  };
+  const verbose = (...args: unknown[]) => {
+    if (verboseMode) console.error(...args);
+  };
 
   // CLI flags win over config values
   const format = (
@@ -293,7 +336,21 @@ async function main() {
   }
 
   const lite = opts.lite ?? config.lite ?? false;
-  const task = opts.task ?? config.task;
+
+  let task = opts.task ?? config.task;
+  if (opts.recipe) {
+    const recipe = getRecipe(opts.recipe);
+    if (!recipe) {
+      console.error(
+        chalk.red(
+          `Unknown --recipe "${opts.recipe}". Available recipes: ${recipeNames().join(", ")}.`,
+        ),
+      );
+      process.exit(1);
+    }
+    task = task ? `${task}\n\n${recipe.prompt}` : recipe.prompt;
+  }
+
   const copy = opts.copy ?? config.output?.copy ?? false;
   const lineNumbers = opts.lineNumbers ?? config.output?.lineNumbers ?? false;
 
@@ -377,32 +434,86 @@ async function main() {
     maxFileSizeKB = parsed;
   }
 
-  // High-end banner
-  const banner = gradient.atlas("EPISTLE");
-  console.error(banner);
-  console.error("");
+  // High-end banner (interactive terminals only)
+  if (!quiet && process.stderr.isTTY) {
+    const banner = gradient.atlas("EPISTLE");
+    console.error(banner);
+    console.error("");
+  }
+
+  if (configPathUsed) {
+    verbose(chalk.dim(`Config: ${configPathUsed}`));
+  }
+  if (opts.profile) {
+    info(chalk.cyan(`Profile: ${opts.profile}`));
+  }
+
+  // Read scan paths from stdin (pipe from find/fzf/git ls-files)
+  let stdinPaths: string[] | undefined;
+  if (opts.stdin) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) {
+      chunks.push(chunk as Buffer);
+    }
+    const raw = Buffer.concat(chunks).toString("utf8");
+    stdinPaths = raw
+      .split(opts.null ? "\0" : "\n")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0);
+    if (stdinPaths.length === 0) {
+      console.error(chalk.red("--stdin was given but no paths were read."));
+      process.exit(1);
+    }
+  }
+  const effectiveScanPaths = stdinPaths ?? scanPaths;
+
+  // Remote repository ingestion
+  let remoteDir: string | undefined;
+  if (opts.remote) {
+    info(chalk.cyan(`⬇ Cloning ${opts.remote} (shallow)...`));
+    try {
+      remoteDir = await cloneRemote(opts.remote, opts.remoteBranch);
+    } catch (err) {
+      console.error(chalk.red((err as Error).message));
+      process.exit(1);
+    }
+  }
+  /** Directory actually scanned (clone dir for --remote, else cwd) */
+  const scanRoot = remoteDir ?? rootDir;
 
   let outputPath: string | undefined;
   let usedAutoOutput = false;
   const configuredOutput = opts.output ?? config.output?.file;
   if (configuredOutput) {
     outputPath = path.resolve(rootDir, configuredOutput);
+  } else if (opts.remote) {
+    const defaultName = `epistle-${remoteRepoName(opts.remote)}${extensionForFormat(format)}`;
+    outputPath = path.join(rootDir, defaultName);
+    usedAutoOutput = true;
   } else if (persona) {
     const defaultName = `epistle-${personaToDefaultSlug(persona)}${extensionForFormat(format)}`;
     outputPath = path.join(rootDir, defaultName);
     usedAutoOutput = true;
   }
 
+  // With --stdout (or piped output and no explicit -o), don't write a file
+  if (usedAutoOutput && (opts.stdout === true || !process.stdout.isTTY)) {
+    outputPath = undefined;
+    usedAutoOutput = false;
+  }
+
   if (usedAutoOutput && !opts.dryRun) {
-    console.error(
+    info(
       chalk.cyan(
         `🚀 No output specified. Using default: ${path.basename(outputPath!)}`,
       ),
     );
   }
 
+  const startedAt = Date.now();
   const spinner = ora({
     text: chalk.cyan("Scanning project..."),
+    isSilent: quiet || !process.stderr.isTTY,
   }).start();
 
   try {
@@ -462,8 +573,8 @@ async function main() {
     }
 
     const scanResult = await scanProject({
-      rootDir,
-      scanPaths,
+      rootDir: scanRoot,
+      scanPaths: effectiveScanPaths,
       excludeGlobs,
       includeGlobs: [...(config.include ?? []), ...(opts.include ?? [])],
       maxFileSizeBytes: maxFileSizeKB * 1024,
@@ -479,14 +590,14 @@ async function main() {
       sortMode === "churn";
     let gitAvailable = false;
     if (needsGit) {
-      gitAvailable = await isGitRepo(rootDir);
+      gitAvailable = await isGitRepo(scanRoot);
       if (!gitAvailable && opts.diff !== undefined) {
         throw new Error(
-          "--diff requires a git repository, but none was found at " + rootDir,
+          "--diff requires a git repository, but none was found at " + scanRoot,
         );
       }
       if (!gitAvailable) {
-        console.error(
+        info(
           chalk.yellow(
             "Warning: not a git repository; git-based options were skipped.",
           ),
@@ -496,7 +607,7 @@ async function main() {
 
     if (opts.diff !== undefined && gitAvailable) {
       const ref = typeof opts.diff === "string" ? opts.diff : "HEAD";
-      const changed = await getChangedFiles(rootDir, ref);
+      const changed = await getChangedFiles(scanRoot, ref);
       if (changed === undefined) {
         throw new Error(
           `Could not compute changed files vs "${ref}". Is the ref valid?`,
@@ -504,7 +615,7 @@ async function main() {
       }
       const changedSet = new Set(changed);
       files = files.filter((f) => changedSet.has(f.path));
-      console.error(
+      info(
         chalk.cyan(
           `Δ Diff mode: packing ${files.length} changed file(s) vs ${ref}.`,
         ),
@@ -512,7 +623,7 @@ async function main() {
     }
 
     if (sortMode === "churn" && gitAvailable) {
-      const churn = (await getChurnCounts(rootDir)) ?? new Map<string, number>();
+      const churn = (await getChurnCounts(scanRoot)) ?? new Map<string, number>();
       // Most-edited files LAST: LLMs weight the end of context most heavily
       files = [...files].sort(
         (a, b) =>
@@ -527,13 +638,13 @@ async function main() {
 
     let gitDiffText: string | undefined;
     if (includeDiffs && gitAvailable) {
-      gitDiffText = await getDiffText(rootDir);
+      gitDiffText = await getDiffText(scanRoot);
       if (!gitDiffText) gitDiffText = undefined;
     }
 
     let gitLogText: string | undefined;
     if (includeLogsCount !== undefined && gitAvailable) {
-      gitLogText = await getLogText(rootDir, includeLogsCount);
+      gitLogText = await getLogText(scanRoot, includeLogsCount);
       if (!gitLogText) gitLogText = undefined;
     }
 
@@ -560,7 +671,7 @@ async function main() {
 
     const formatOpts = {
       format,
-      rootDir,
+      rootDir: scanRoot,
       persona,
       task,
       lineNumbers,
@@ -582,10 +693,8 @@ async function main() {
       );
     }
 
-    let { output, totalTokens, fileTokenStats, dirTokenMap } = formatOutput(
-      files,
-      formatOpts,
-    );
+    let { output, totalTokens, fileTokenStats, dirTokenMap, treeText } =
+      formatOutput(files, formatOpts);
 
     // Token budget enforcement: drop the heaviest files until the pack fits.
     const omittedForBudget: string[] = [];
@@ -604,10 +713,8 @@ async function main() {
         omittedForBudget.push(stat.path);
         estimated -= stat.tokens;
       }
-      ({ output, totalTokens, fileTokenStats, dirTokenMap } = formatOutput(
-        files,
-        formatOpts,
-      ));
+      ({ output, totalTokens, fileTokenStats, dirTokenMap, treeText } =
+        formatOutput(files, formatOpts));
     }
 
     if (opts.dryRun) {
@@ -631,11 +738,15 @@ async function main() {
     }
 
     if (totalTokens > TOKEN_BUDGET_WARNING) {
-      console.error(
+      info(
         chalk.yellow(
           "⚠️  Warning: Total tokens exceed 50k. Consider using --exclude to prune large directories or data files.",
         ),
       );
+    }
+
+    if (opts.treeOnly) {
+      output = treeText + "\n";
     }
 
     const shouldWriteStdout =
@@ -669,11 +780,17 @@ async function main() {
       }
     }
 
+    const elapsedMs = Date.now() - startedAt;
     spinner.succeed(
       chalk.green(
         `Packed ${files.length} files` +
           (outputPath ? ` into ${outputPath}` : " to stdout") +
-          `.`,
+          ` in ${elapsedMs}ms.`,
+      ),
+    );
+    verbose(
+      chalk.dim(
+        `Scanned ${scanResult.totalEntries} entries, pruned ${scanResult.ignoredEntries}.`,
       ),
     );
 
@@ -688,7 +805,7 @@ async function main() {
       if (compress) details.push(`${compressedFileCount} files compressed to signatures`);
       if (removeComments) details.push("comments stripped");
       if (removeEmptyLines) details.push("blank lines removed");
-      console.error(
+      info(
         chalk.cyan(
           `🗜️  Content shaping saved ~${savedPct}% of characters (${details.join(", ")}).`,
         ),
@@ -696,7 +813,7 @@ async function main() {
     }
 
     if (omittedForBudget.length > 0) {
-      console.error(
+      info(
         chalk.yellow(
           `✂️  Token budget ${maxTokens}: omitted ${omittedForBudget.length} file(s): ${omittedForBudget
             .slice(0, 5)
@@ -714,9 +831,9 @@ async function main() {
     });
 
     if (hogEntries.length > 0) {
-      console.error("");
-      console.error(chalk.cyan("Top Context Hogs"));
-      console.error(
+      info("");
+      info(chalk.cyan("Top Context Hogs"));
+      info(
         chalk.dim(
           hogMode === "files"
             ? "Mode: files (top 5 largest files by tokens)"
@@ -726,25 +843,25 @@ async function main() {
         ),
       );
       for (const entry of hogEntries) {
-        console.error(formatHogEntry(entry, totalTokens));
+        info(formatHogEntry(entry, totalTokens));
       }
-      console.error("");
+      info("");
     }
 
     if (opts.fit) {
-      console.error("");
-      console.error(chalk.cyan("Context Window Fit"));
+      info("");
+      info(chalk.cyan("Context Window Fit"));
       for (const line of renderFitReport(totalTokens)) {
-        console.error(line);
+        info(line);
       }
-      console.error("");
+      info("");
     }
 
     // Dashboard summary box (stderr)
-    let projectName: string = path.basename(rootDir);
+    let projectName: string = path.basename(scanRoot);
     try {
       const pkgRaw = await fs.readFile(
-        path.join(rootDir, "package.json"),
+        path.join(scanRoot, "package.json"),
         "utf8",
       );
       const pkg = JSON.parse(pkgRaw) as { name?: unknown };
@@ -806,14 +923,14 @@ async function main() {
     const topBorder = "┏" + "━".repeat(contentWidth + 2) + "┓";
     const bottomBorder = "┗" + "━".repeat(contentWidth + 2) + "┛";
 
-    console.error(topBorder);
+    info(topBorder);
     for (const line of lines) {
       const padding = " ".repeat(contentWidth - line.length);
-      console.error(`┃ ${line}${padding} ┃`);
+      info(`┃ ${line}${padding} ┃`);
     }
-    console.error(bottomBorder);
+    info(bottomBorder);
 
-    console.error(
+    info(
       chalk.dim(
         "Tip: Add your output file to .gitignore to keep your repo clean.",
       ),
@@ -821,7 +938,14 @@ async function main() {
   } catch (err) {
     spinner.fail(chalk.red("Failed to generate Epistle context."));
     console.error(chalk.red((err as Error).message));
+    if (remoteDir) {
+      await fs.rm(remoteDir, { recursive: true, force: true });
+    }
     process.exit(1);
+  }
+
+  if (remoteDir) {
+    await fs.rm(remoteDir, { recursive: true, force: true });
   }
 }
 

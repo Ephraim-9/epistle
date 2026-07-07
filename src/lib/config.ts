@@ -36,6 +36,32 @@ export interface EpistleConfig {
   redact?: boolean;
   /** Tokenizer encoding: "o200k_base" or "cl100k_base" */
   encoding?: string;
+  /** Named presets; select one with --profile. Profile values override base config. */
+  profiles?: Record<string, Omit<EpistleConfig, "profiles">>;
+}
+
+/** Merge a profile over a base config (profile wins; output is deep-merged). */
+export function applyProfile(
+  base: EpistleConfig,
+  profileName: string,
+): EpistleConfig {
+  const profile = base.profiles?.[profileName];
+  if (!profile) {
+    const available = Object.keys(base.profiles ?? {});
+    throw new Error(
+      `Unknown profile "${profileName}".` +
+        (available.length > 0
+          ? ` Available profiles: ${available.join(", ")}`
+          : " No profiles are defined in the config file."),
+    );
+  }
+  return {
+    ...base,
+    ...profile,
+    output: { ...base.output, ...profile.output },
+    include: profile.include ?? base.include,
+    exclude: profile.exclude ?? base.exclude,
+  };
 }
 
 export const CONFIG_FILE_NAME = "epistle.config.json";

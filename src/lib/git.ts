@@ -1,7 +1,53 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Expand "user/repo" shorthand to a GitHub URL; pass full URLs through.
+ */
+export function normalizeRemoteUrl(remote: string): string {
+  if (/^[\w.-]+\/[\w.-]+$/.test(remote)) {
+    return `https://github.com/${remote}.git`;
+  }
+  return remote;
+}
+
+/** Repo name derived from a remote URL, for default output naming. */
+export function remoteRepoName(remote: string): string {
+  const cleaned = remote.replace(/\.git$/, "").replace(/\/+$/, "");
+  const last = cleaned.split("/").pop() ?? "remote";
+  return last.replace(/[^\w.-]+/g, "-") || "remote";
+}
+
+/**
+ * Shallow-clone a remote repository into a temp directory.
+ * Caller is responsible for removing the returned directory.
+ */
+export async function cloneRemote(
+  remote: string,
+  branch?: string,
+): Promise<string> {
+  const url = normalizeRemoteUrl(remote);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "epistle-remote-"));
+  const args = ["clone", "--depth", "1", "--single-branch"];
+  if (branch) {
+    args.push("--branch", branch);
+  }
+  args.push(url, dir);
+  try {
+    await execFileAsync("git", args, { maxBuffer: 32 * 1024 * 1024 });
+  } catch (err) {
+    await fs.rm(dir, { recursive: true, force: true });
+    throw new Error(
+      `Failed to clone "${url}"${branch ? ` (branch ${branch})` : ""}: ${(err as Error).message}`,
+    );
+  }
+  return dir;
+}
 
 /** Run a git command in rootDir; returns stdout or undefined on failure. */
 async function git(

@@ -3,6 +3,31 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.0] - 2026-07-07
+
+### Added
+- **`--remote <url>` + `--remote-branch`**: shallow-clone and pack any
+  remote repository (`user/repo` GitHub shorthand supported); auto-named
+  output `epistle-<repo>.<ext>`; temp clone always cleaned up.
+- **`--profile <name>`** *(invented)*: named presets in
+  `epistle.config.json` under `profiles`, deep-merged over the base config.
+- **`--recipe <name>`** *(invented twist on codebase-digest's prompt
+  library)*: six curated, task-shaped analysis prompts — `review`, `test`,
+  `refactor`, `onboard`, `document`, `audit` — appended as the task
+  section and composable with `--task` and `--persona`.
+- **`--stdin` / `-0`**: read the file list from stdin (newline- or
+  NUL-separated), enabling `find`/`fzf`/`git ls-files` pipelines.
+- **`--tree-only`**: emit just the directory tree.
+- **`-q, --quiet`** and **`--verbose`**: quiet suppresses everything but
+  errors; verbose adds config source, scan totals, and prune counts.
+- Elapsed time in the success line.
+
+### Changed
+- Banner and spinner render only on interactive terminals (clean logs in
+  CI and pipes); `NO_COLOR` respected via chalk.
+- With piped stdout and no explicit `-o`, auto-named outputs (persona/
+  remote defaults) now stream to stdout instead of writing a file.
+
 ## [0.7.0] - 2026-07-07
 
 ### Added

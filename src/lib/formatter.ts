@@ -344,6 +344,7 @@ export function formatOutput(
   totalTokens: number;
   fileTokenStats: FileTokenStat[];
   dirTokenMap: DirectoryTokenMap;
+  treeText: string;
 } {
   const maxFileSizeKB = options.maxFileSizeKB ?? 100;
   const sortedFiles =
@@ -445,6 +446,7 @@ export function formatOutput(
       totalTokens,
       fileTokenStats,
       dirTokenMap,
+      treeText,
     };
   }
 
@@ -498,7 +500,7 @@ export function formatOutput(
       parts.push("");
     }
 
-    return { output: parts.join("\n"), totalTokens, fileTokenStats, dirTokenMap };
+    return { output: parts.join("\n"), totalTokens, fileTokenStats, dirTokenMap, treeText };
   }
 
   if (options.format === "xml") {
@@ -541,7 +543,7 @@ export function formatOutput(
     }
 
     parts.push("</epistle>");
-    return { output: parts.join("\n"), totalTokens, fileTokenStats, dirTokenMap };
+    return { output: parts.join("\n"), totalTokens, fileTokenStats, dirTokenMap, treeText };
   }
 
   // Markdown format (default)
@@ -619,5 +621,5 @@ export function formatOutput(
     mdParts.push("");
   }
 
-  return { output: mdParts.join("\n"), totalTokens, fileTokenStats, dirTokenMap };
+  return { output: mdParts.join("\n"), totalTokens, fileTokenStats, dirTokenMap, treeText };
 }
