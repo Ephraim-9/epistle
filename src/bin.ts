@@ -17,8 +17,9 @@ import {
   type PersonaType,
 } from "./lib/formatter.js";
 import { initConfig, loadConfig, CONFIG_FILE_NAME } from "./lib/config.js";
+import { transformContent } from "./lib/compress.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const TOKEN_BUDGET_WARNING = 50000;
 
 type HogMode = "files" | "dirs" | "auto";
@@ -110,6 +111,19 @@ async function main() {
     )
     .option("-n, --line-numbers", "Prefix file contents with line numbers")
     .option(
+      "--remove-comments",
+      "Strip comments from source files (JS/TS, Python, CSS, HTML, SQL, and more)",
+    )
+    .option("--remove-empty-lines", "Remove blank lines from file contents")
+    .option(
+      "--compress",
+      "Signature-only compression: keep imports and declarations, elide bodies",
+    )
+    .option(
+      "--max-tokens <count>",
+      "Drop the largest files until output fits within this token budget",
+    )
+    .option(
       "--max-file-size <kb>",
       "Skip files larger than this many kilobytes (default: 100)",
     )
@@ -140,6 +154,10 @@ async function main() {
     lite?: boolean;
     lineNumbers?: boolean;
     maxFileSize?: string;
+    removeComments?: boolean;
+    removeEmptyLines?: boolean;
+    compress?: boolean;
+    maxTokens?: string;
     dryRun?: boolean;
     config?: string;
     init?: boolean;
@@ -206,6 +224,25 @@ async function main() {
   const task = opts.task ?? config.task;
   const copy = opts.copy ?? config.output?.copy ?? false;
   const lineNumbers = opts.lineNumbers ?? config.output?.lineNumbers ?? false;
+
+  const removeComments = opts.removeComments ?? config.removeComments ?? false;
+  const removeEmptyLines =
+    opts.removeEmptyLines ?? config.removeEmptyLines ?? false;
+  const compress = opts.compress ?? config.compress ?? false;
+
+  let maxTokens: number | undefined = config.maxTokens;
+  if (opts.maxTokens !== undefined) {
+    const parsed = Number(opts.maxTokens);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      console.error(
+        chalk.red(
+          `Invalid --max-tokens value "${opts.maxTokens}". Provide a positive number.`,
+        ),
+      );
+      process.exit(1);
+    }
+    maxTokens = Math.floor(parsed);
+  }
 
   let maxFileSizeKB = config.maxFileSizeKB ?? 100;
   if (opts.maxFileSize !== undefined) {
@@ -313,19 +350,63 @@ async function main() {
       maxFileSizeBytes: maxFileSizeKB * 1024,
     });
 
+    // Content-shaping transforms (comment stripping, blank lines, compression)
+    let originalChars = 0;
+    let transformedChars = 0;
+    let compressedFileCount = 0;
+    if (removeComments || removeEmptyLines || compress) {
+      for (const file of files) {
+        if (!file.content || file.isBinary || file.isOversized) continue;
+        originalChars += file.content.length;
+        const { content, compressed } = transformContent(
+          file.path,
+          file.content,
+          { removeComments, removeEmptyLines, compress },
+        );
+        file.content = content;
+        transformedChars += content.length;
+        if (compressed) compressedFileCount++;
+      }
+    }
+
     spinner.text = chalk.cyan("Formatting output...");
 
-    const { output, totalTokens, fileTokenStats, dirTokenMap } = formatOutput(
+    const formatOpts = {
+      format,
+      rootDir,
+      persona,
+      task,
+      lineNumbers,
+      maxFileSizeKB,
+    };
+
+    let { output, totalTokens, fileTokenStats, dirTokenMap } = formatOutput(
       files,
-      {
-        format,
-        rootDir,
-        persona,
-        task,
-        lineNumbers,
-        maxFileSizeKB,
-      },
+      formatOpts,
     );
+
+    // Token budget enforcement: drop the heaviest files until the pack fits.
+    const omittedForBudget: string[] = [];
+    if (maxTokens !== undefined && totalTokens > maxTokens) {
+      const byTokensDesc = [...fileTokenStats].sort(
+        (a, b) => b.tokens - a.tokens,
+      );
+      let estimated = totalTokens;
+      for (const stat of byTokensDesc) {
+        if (estimated <= maxTokens) break;
+        if (stat.path === "package.json") continue; // always keep the manifest
+        const file = files.find((f) => f.path === stat.path);
+        if (!file || !file.content) continue;
+        file.isOmitted = true;
+        delete file.content;
+        omittedForBudget.push(stat.path);
+        estimated -= stat.tokens;
+      }
+      ({ output, totalTokens, fileTokenStats, dirTokenMap } = formatOutput(
+        files,
+        formatOpts,
+      ));
+    }
 
     if (opts.dryRun) {
       spinner.succeed(chalk.green("Dry run complete. No output written."));
@@ -393,6 +474,34 @@ async function main() {
           `.`,
       ),
     );
+
+    if (
+      (removeComments || removeEmptyLines || compress) &&
+      originalChars > 0
+    ) {
+      const savedPct = Math.round(
+        ((originalChars - transformedChars) / originalChars) * 100,
+      );
+      const details: string[] = [];
+      if (compress) details.push(`${compressedFileCount} files compressed to signatures`);
+      if (removeComments) details.push("comments stripped");
+      if (removeEmptyLines) details.push("blank lines removed");
+      console.error(
+        chalk.cyan(
+          `🗜️  Content shaping saved ~${savedPct}% of characters (${details.join(", ")}).`,
+        ),
+      );
+    }
+
+    if (omittedForBudget.length > 0) {
+      console.error(
+        chalk.yellow(
+          `✂️  Token budget ${maxTokens}: omitted ${omittedForBudget.length} file(s): ${omittedForBudget
+            .slice(0, 5)
+            .join(", ")}${omittedForBudget.length > 5 ? ", …" : ""}`,
+        ),
+      );
+    }
 
     // Determine hog mode and entries (based on already-pruned files list)
     const { hogMode, hogDepth, hogEntries } = computeHogsForProject({

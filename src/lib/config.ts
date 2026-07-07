@@ -18,6 +18,14 @@ export interface EpistleConfig {
   persona?: string;
   lite?: boolean;
   task?: string;
+  /** Strip comments from source files */
+  removeComments?: boolean;
+  /** Remove blank lines from file contents */
+  removeEmptyLines?: boolean;
+  /** Signature-only compression for supported languages */
+  compress?: boolean;
+  /** Drop lowest-priority files until output fits this many tokens */
+  maxTokens?: number;
 }
 
 export const CONFIG_FILE_NAME = "epistle.config.json";

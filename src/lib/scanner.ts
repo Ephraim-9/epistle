@@ -16,6 +16,8 @@ export interface ScannedFile {
   isBinary: boolean;
   /** True if larger than the configured max file size */
   isOversized: boolean;
+  /** True if dropped to fit a token budget (content omitted from output) */
+  isOmitted?: boolean;
   /** File contents, only present for non-binary files within size limit */
   content?: string;
 }

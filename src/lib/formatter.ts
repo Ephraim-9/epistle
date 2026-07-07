@@ -79,6 +79,8 @@ function renderTree(node: TreeNode, maxFileSizeKB: number, prefix = ""): string 
         label += " [binary]";
       } else if (child.file.isOversized) {
         label += ` [skipped >${maxFileSizeKB}KB]`;
+      } else if (child.file.isOmitted) {
+        label += " [omitted: token budget]";
       }
     }
 
@@ -339,6 +341,7 @@ function slugifyHeading(value: string): string {
 function unavailableNote(file: ScannedFile, maxFileSizeKB: number): string {
   if (file.isBinary) return "(binary file, contents not included)";
   if (file.isOversized) return `(file >${maxFileSizeKB}KB, contents skipped)`;
+  if (file.isOmitted) return "(omitted to fit token budget)";
   return "(no content)";
 }
 
@@ -425,6 +428,7 @@ export function formatOutput(
           fileTokenStats.find((s) => s.path === file.path)?.tokens ?? 0,
         binary: file.isBinary,
         oversized: file.isOversized,
+        omitted: file.isOmitted ?? false,
         content:
           !file.content || file.isBinary || file.isOversized
             ? null
