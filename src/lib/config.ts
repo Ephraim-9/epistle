@@ -6,6 +6,8 @@ import path from "node:path";
  * Every field is optional; CLI flags always win over config values.
  */
 export interface EpistleConfig {
+  /** JSON Schema reference for editor autocomplete; ignored at runtime */
+  $schema?: string;
   output?: {
     file?: string;
     format?: string;
@@ -66,7 +68,11 @@ export function applyProfile(
 
 export const CONFIG_FILE_NAME = "epistle.config.json";
 
+/** Published copy of the schema bundled with the npm package. */
+export const SCHEMA_URL = "https://unpkg.com/epistle/epistle.schema.json";
+
 export const DEFAULT_CONFIG_TEMPLATE: EpistleConfig = {
+  $schema: SCHEMA_URL,
   output: {
     file: "epistle-context.md",
     format: "markdown",
@@ -90,6 +96,180 @@ export const DEFAULT_CONFIG_TEMPLATE: EpistleConfig = {
     },
   },
 };
+
+// ---------------------------------------------------------------------------
+// Load-time validation (mirrors epistle.schema.json; keep the two in sync)
+// ---------------------------------------------------------------------------
+
+const OUTPUT_KEYS = ["file", "format", "lineNumbers", "copy"] as const;
+const FORMAT_VALUES = ["markdown", "xml", "plain", "json"];
+const SORT_VALUES = ["path", "churn", "size"];
+const PERSONA_VALUES = ["architect", "security", "refactor", "arch", "sec", "ref"];
+const ENCODING_VALUES = ["o200k_base", "cl100k_base"];
+
+const BASE_KEYS = [
+  "$schema",
+  "output",
+  "include",
+  "exclude",
+  "maxFileSizeKB",
+  "persona",
+  "lite",
+  "task",
+  "removeComments",
+  "removeEmptyLines",
+  "compress",
+  "maxTokens",
+  "sort",
+  "includeDiffs",
+  "includeLogs",
+  "redact",
+  "encoding",
+  "profiles",
+] as const;
+
+function suggestKey(key: string, validKeys: readonly string[]): string {
+  const lower = key.toLowerCase();
+  const match = validKeys.find(
+    (k) => k.toLowerCase() === lower || k.toLowerCase().startsWith(lower.slice(0, 4)),
+  );
+  return match ? ` (did you mean "${match}"?)` : "";
+}
+
+function checkEnum(
+  errors: string[],
+  where: string,
+  value: unknown,
+  allowed: string[],
+): void {
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    errors.push(
+      `${where}: must be one of ${allowed.map((v) => `"${v}"`).join(", ")} (got ${JSON.stringify(value)})`,
+    );
+  }
+}
+
+function checkType(
+  errors: string[],
+  where: string,
+  value: unknown,
+  expected: "string" | "boolean",
+): void {
+  if (typeof value !== expected) {
+    errors.push(`${where}: must be a ${expected} (got ${JSON.stringify(value)})`);
+  }
+}
+
+function checkPositiveNumber(
+  errors: string[],
+  where: string,
+  value: unknown,
+): void {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    errors.push(`${where}: must be a positive number (got ${JSON.stringify(value)})`);
+  }
+}
+
+function checkStringArray(
+  errors: string[],
+  where: string,
+  value: unknown,
+): void {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+    errors.push(`${where}: must be an array of strings (got ${JSON.stringify(value)})`);
+  }
+}
+
+function validateOutput(
+  errors: string[],
+  prefix: string,
+  value: unknown,
+): void {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    errors.push(`${prefix}: must be an object (got ${JSON.stringify(value)})`);
+    return;
+  }
+  const output = value as Record<string, unknown>;
+  for (const key of Object.keys(output)) {
+    if (!(OUTPUT_KEYS as readonly string[]).includes(key)) {
+      errors.push(
+        `${prefix}.${key}: unknown key${suggestKey(key, OUTPUT_KEYS)}. Valid keys: ${OUTPUT_KEYS.join(", ")}`,
+      );
+    }
+  }
+  if (output.file !== undefined) checkType(errors, `${prefix}.file`, output.file, "string");
+  if (output.format !== undefined) checkEnum(errors, `${prefix}.format`, output.format, FORMAT_VALUES);
+  if (output.lineNumbers !== undefined) checkType(errors, `${prefix}.lineNumbers`, output.lineNumbers, "boolean");
+  if (output.copy !== undefined) checkType(errors, `${prefix}.copy`, output.copy, "boolean");
+}
+
+function validateSection(
+  errors: string[],
+  prefix: string,
+  section: Record<string, unknown>,
+  allowProfiles: boolean,
+): void {
+  const validKeys = allowProfiles
+    ? BASE_KEYS
+    : BASE_KEYS.filter((k) => k !== "profiles" && k !== "$schema");
+  for (const key of Object.keys(section)) {
+    if (!(validKeys as readonly string[]).includes(key)) {
+      errors.push(
+        `${prefix}${key}: unknown key${suggestKey(key, validKeys)}. Valid keys: ${validKeys.join(", ")}`,
+      );
+    }
+  }
+
+  const v = section;
+  if (v.output !== undefined) validateOutput(errors, `${prefix}output`, v.output);
+  if (v.include !== undefined) checkStringArray(errors, `${prefix}include`, v.include);
+  if (v.exclude !== undefined) checkStringArray(errors, `${prefix}exclude`, v.exclude);
+  if (v.maxFileSizeKB !== undefined) checkPositiveNumber(errors, `${prefix}maxFileSizeKB`, v.maxFileSizeKB);
+  if (v.persona !== undefined) checkEnum(errors, `${prefix}persona`, v.persona, PERSONA_VALUES);
+  if (v.lite !== undefined) checkType(errors, `${prefix}lite`, v.lite, "boolean");
+  if (v.task !== undefined) checkType(errors, `${prefix}task`, v.task, "string");
+  if (v.removeComments !== undefined) checkType(errors, `${prefix}removeComments`, v.removeComments, "boolean");
+  if (v.removeEmptyLines !== undefined) checkType(errors, `${prefix}removeEmptyLines`, v.removeEmptyLines, "boolean");
+  if (v.compress !== undefined) checkType(errors, `${prefix}compress`, v.compress, "boolean");
+  if (v.maxTokens !== undefined) checkPositiveNumber(errors, `${prefix}maxTokens`, v.maxTokens);
+  if (v.sort !== undefined) checkEnum(errors, `${prefix}sort`, v.sort, SORT_VALUES);
+  if (v.includeDiffs !== undefined) checkType(errors, `${prefix}includeDiffs`, v.includeDiffs, "boolean");
+  if (v.includeLogs !== undefined && typeof v.includeLogs !== "boolean") {
+    if (typeof v.includeLogs !== "number" || !Number.isFinite(v.includeLogs) || v.includeLogs <= 0) {
+      errors.push(
+        `${prefix}includeLogs: must be a boolean or a positive commit count (got ${JSON.stringify(v.includeLogs)})`,
+      );
+    }
+  }
+  if (v.redact !== undefined) checkType(errors, `${prefix}redact`, v.redact, "boolean");
+  if (v.encoding !== undefined) checkEnum(errors, `${prefix}encoding`, v.encoding, ENCODING_VALUES);
+}
+
+/**
+ * Validate a parsed config object. Returns a list of field-level problems;
+ * empty means the config is valid.
+ */
+export function validateConfig(parsed: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  validateSection(errors, "", parsed, true);
+
+  if (parsed.profiles !== undefined) {
+    const profiles = parsed.profiles;
+    if (profiles === null || typeof profiles !== "object" || Array.isArray(profiles)) {
+      errors.push(`profiles: must be an object of named presets (got ${JSON.stringify(profiles)})`);
+    } else {
+      for (const [name, profile] of Object.entries(profiles as Record<string, unknown>)) {
+        if (profile === null || typeof profile !== "object" || Array.isArray(profile)) {
+          errors.push(`profiles.${name}: must be an object (got ${JSON.stringify(profile)})`);
+          continue;
+        }
+        validateSection(errors, `profiles.${name}.`, profile as Record<string, unknown>, false);
+      }
+    }
+  }
+
+  return errors;
+}
 
 export interface LoadConfigResult {
   config: EpistleConfig;
@@ -134,6 +314,14 @@ export async function loadConfig(
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(
       `Config file "${configPath}" must contain a JSON object at the top level.`,
+    );
+  }
+
+  const problems = validateConfig(parsed as Record<string, unknown>);
+  if (problems.length > 0) {
+    throw new Error(
+      `Invalid config in "${configPath}":\n` +
+        problems.map((p) => `  - ${p}`).join("\n"),
     );
   }
 

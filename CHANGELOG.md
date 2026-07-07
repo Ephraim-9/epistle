@@ -3,6 +3,21 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.0] - 2026-07-07
+
+### Added
+- **JSON Schema for the config file** (`epistle.schema.json`, bundled in
+  the npm package): editors autocomplete and validate
+  `epistle.config.json`. The `--init` template now carries a `"$schema"`
+  reference automatically.
+- **Load-time config validation**: every field is checked against the
+  schema shape with field-level error paths (e.g.
+  `profiles.tiny.compress: must be a boolean`), enum listings for
+  `format`/`sort`/`persona`/`encoding`, and did-you-mean suggestions for
+  misspelled keys. All problems are reported at once, not one per run.
+- GitHub Actions CI: build + full test suite on Node 18/20/22 for every
+  push and pull request, plus a compiled-CLI smoke test.
+
 ## [1.1.0] - 2026-07-07
 
 ### Changed
