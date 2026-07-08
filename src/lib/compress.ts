@@ -275,6 +275,8 @@ export interface TransformOptions {
 export interface TransformResult {
   content: string;
   compressed: boolean;
+  /** Which compression engine produced the result (when compressed) */
+  engine?: "ast" | "heuristic";
 }
 
 export function transformContent(
@@ -285,7 +287,7 @@ export function transformContent(
   if (options.compress) {
     const skeleton = compressToSignatures(filePath, content);
     if (skeleton !== undefined) {
-      return { content: skeleton, compressed: true };
+      return { content: skeleton, compressed: true, engine: "heuristic" };
     }
   }
 
@@ -297,4 +299,28 @@ export function transformContent(
     result = removeEmptyLines(result);
   }
   return { content: result, compressed: false };
+}
+
+/**
+ * Like transformContent, but tries tree-sitter AST compression first
+ * (optional dependency; see ast-compress.ts). Falls back to the
+ * line-based heuristic — and from there to full content — automatically.
+ */
+export async function transformContentAsync(
+  filePath: string,
+  content: string,
+  options: TransformOptions,
+): Promise<TransformResult> {
+  if (options.compress) {
+    try {
+      const { astCompressToSignatures } = await import("./ast-compress.js");
+      const skeleton = await astCompressToSignatures(filePath, content);
+      if (skeleton !== undefined) {
+        return { content: skeleton, compressed: true, engine: "ast" };
+      }
+    } catch {
+      // Optional stack unavailable or parse failure: heuristic below
+    }
+  }
+  return transformContent(filePath, content, options);
 }

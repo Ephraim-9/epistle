@@ -19,7 +19,7 @@ import {
   type TokenEncoding,
 } from "./lib/formatter.js";
 import { initConfig, loadConfig, CONFIG_FILE_NAME } from "./lib/config.js";
-import { transformContent } from "./lib/compress.js";
+import { transformContentAsync } from "./lib/compress.js";
 import {
   cloneRemote,
   getChangedFiles,
@@ -39,7 +39,7 @@ import {
   type CompletionShell,
 } from "./lib/completions.js";
 
-const VERSION = "1.5.1";
+const VERSION = "1.6.0";
 
 type SortMode = "path" | "churn" | "size";
 
@@ -691,11 +691,12 @@ Shell completions:
     let originalChars = 0;
     let transformedChars = 0;
     let compressedFileCount = 0;
+    let astCompressedCount = 0;
     if (removeComments || removeEmptyLines || compress) {
       for (const file of files) {
         if (!file.content || file.isBinary || file.isOversized) continue;
         originalChars += file.content.length;
-        const { content, compressed } = transformContent(
+        const { content, compressed, engine } = await transformContentAsync(
           file.path,
           file.content,
           { removeComments, removeEmptyLines, compress },
@@ -703,6 +704,16 @@ Shell completions:
         file.content = content;
         transformedChars += content.length;
         if (compressed) compressedFileCount++;
+        if (engine === "ast") astCompressedCount++;
+      }
+      if (compress) {
+        verbose(
+          chalk.dim(
+            astCompressedCount > 0
+              ? `Compression engine: tree-sitter AST (${astCompressedCount} files) + line heuristic (${compressedFileCount - astCompressedCount}).`
+              : "Compression engine: line heuristic (tree-sitter not available or no supported files).",
+          ),
+        );
       }
     }
 

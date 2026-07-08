@@ -5,7 +5,7 @@ import {
   type OutputFormat,
   type TokenEncoding,
 } from "./formatter.js";
-import { transformContent } from "./compress.js";
+import { transformContentAsync } from "./compress.js";
 import {
   getChangedFiles,
   getChurnCounts,
@@ -147,7 +147,7 @@ export async function packDirectory(options: PackOptions): Promise<PackResult> {
   if (shaping) {
     for (const file of files) {
       if (!file.content || file.isBinary || file.isOversized) continue;
-      const { content } = transformContent(file.path, file.content, {
+      const { content } = await transformContentAsync(file.path, file.content, {
         removeComments: options.removeComments ?? false,
         removeEmptyLines: options.removeEmptyLines ?? false,
         compress: options.compress ?? false,

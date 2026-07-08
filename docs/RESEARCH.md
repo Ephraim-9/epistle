@@ -204,6 +204,21 @@ The most feature-complete tool in the space. Key capabilities:
 > unbuilt (an MCP client re-packs on demand, which covers the use case
 > with none of the file-watcher complexity).
 >
+> **Revision (2026-07-08, v1.6.0): tree-sitter compression shipped after
+> benchmarking.** Measured on facebook/react (4,435 JS/TS/PY files,
+> 4.16M tokens): line heuristic 81.3% reduction in 0.15s; AST 84.7% in
+> 6.7s with zero parse failures. The ratio gap is small, but the
+> *correctness* gap is not: the heuristic drops every parameter line of
+> multi-line signatures, decorator arguments, and return types — exactly
+> the content a skeleton exists to preserve (verified on crafted edge
+> cases; the AST output keeps all of them). Design: web-tree-sitter +
+> tree-sitter-wasms ship as **optionalDependencies** (~55MB), the same
+> `--compress` flag prefers the AST engine (TS/JS/TSX/JSX, Python, Go,
+> Rust) and falls back per-file to the heuristic for other languages —
+> or entirely when installed with `--omit=optional` (note: npm honors
+> that flag for local installs, not global ones). Grammar wasms are
+> ABI-tied to web-tree-sitter 0.20.x; the pins must move together.
+>
 > **Distribution decision (2026-07-08, v1.5.1):** the npm tarball is the
 > single supported channel, verified end-to-end (`npm pack` → global
 > install → pack/completions smoke test). Homebrew and Docker — which

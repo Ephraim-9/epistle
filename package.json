@@ -1,6 +1,6 @@
 {
   "name": "epistle",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Epistle – a production-grade Node.js CLI that packs a local codebase into a single, LLM-friendly context file.",
   "private": false,
   "license": "MIT",
@@ -64,5 +64,9 @@
     "eslint": "^9.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.6.0"
+  },
+  "optionalDependencies": {
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "^0.20.8"
   }
 }

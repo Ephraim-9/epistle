@@ -3,6 +3,23 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.6.0] - 2026-07-08
+
+### Added
+- **Tree-sitter AST compression**: `--compress` now uses real parse
+  trees (web-tree-sitter + prebuilt grammar wasms) for
+  TypeScript/TSX/JavaScript/JSX, Python, Go, and Rust. Multi-line
+  signatures, decorator arguments, and return types survive intact —
+  the line heuristic elided them mid-declaration. Benchmarked on
+  facebook/react: 84.7% token reduction vs the heuristic's 81.3%, zero
+  parse failures across 4,435 files.
+- The tree-sitter stack ships as **optional dependencies**: install
+  with `--omit=optional` (local installs) for a lean package, and the
+  same `--compress` flag falls back automatically — per-file for
+  unsupported languages (Java/C#/Kotlin/Swift still use the heuristic),
+  or entirely when the stack is absent. `--verbose` reports which
+  engine ran.
+
 ## [1.5.1] - 2026-07-08
 
 ### Fixed
