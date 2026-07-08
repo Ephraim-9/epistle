@@ -9,8 +9,10 @@ emits one tidy file in Markdown, XML, plain text, or JSON.
 ```bash
 npx epistle --stdout | pbcopy         # pack the current directory
 npx epistle src lib --compress -o ctx.md
-npx epistle --remote yamadashy/repomix --fit
+npx epistle yamadashy/repomix --fit   # pack a remote repo by shorthand
 ```
+
+Fast on real repos: packing facebook/react (7,000+ files) takes ~5s.
 
 ## Why Epistle?
 
@@ -21,7 +23,7 @@ the best ideas from the whole field — and adds a few of its own:
 |---|---|---|---|---|---|---|
 | Markdown / XML / plain / JSON output | ✅ | ✅ | template | ❌ | partial | template |
 | Fence-safe Markdown (files containing ```` ``` ````) | ✅ | ❌ | ❌ | ❌ | ✅ | — |
-| Signature-only compression | ✅ zero-dep | ✅ tree-sitter | ❌ | ❌ | ❌ | ❌ |
+| Signature compression (AST, tree-sitter) | ✅ +heuristic fallback | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Comment / blank-line stripping | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Fit-to-budget file dropping | ✅ | ❌ (fails) | ❌ | ❌ | ❌ | ✅ |
 | Changed-files-only pack (`--diff`) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -29,9 +31,11 @@ the best ideas from the whole field — and adds a few of its own:
 | Secret redaction (default ON) | ✅ | ✅ scan | ❌ | ❌ | ❌ | ❌ |
 | Credential-file exclusion (.env, keys) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Context-window fit report (`--fit`) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Remote repo ingest | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Remote repo ingest (`owner/repo`) | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| MCP server mode (`--mcp`) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Shell completions | ✅ bash/zsh/fish | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Personas + prompt recipes | ✅ | ❌ | templates | ❌ | ❌ | ❌ |
-| Config profiles | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Config profiles + JSON Schema | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | stdin file lists (`find … | epistle --stdin`) | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 
 *(See [docs/RESEARCH.md](docs/RESEARCH.md) for the full competitive analysis.)*
@@ -57,7 +61,7 @@ epistle --copy                        # straight to clipboard
 ## Fitting big codebases into small windows
 
 ```bash
-epistle --compress -o ctx.md          # keep signatures, elide bodies (~70-80% smaller)
+epistle --compress -o ctx.md          # keep signatures, elide bodies (~80% smaller)
 epistle --remove-comments --remove-empty-lines -o ctx.md
 epistle --max-tokens 100000 -o ctx.md # drop heaviest files until it fits
 epistle --lite -o ctx.md              # prune styles, images, data files
@@ -68,6 +72,13 @@ epistle --hog-depth auto              # find your token hogs
 `--max-file-size <kb>` caps individual files (default 100KB). Binary files
 are always listed but never inlined.
 
+`--compress` uses **real parse trees** (tree-sitter) for TypeScript, JSX,
+Python, Go, and Rust, so multi-line signatures, decorators, and return
+types survive intact. Other languages fall back to a fast line-based
+heuristic. The tree-sitter grammars are an *optional dependency* — install
+with `npm i -g epistle --omit=optional` to skip the ~55MB download and the
+heuristic covers everything.
+
 ## Git awareness
 
 ```bash
@@ -75,9 +86,13 @@ epistle --diff -o review.md           # ONLY files changed vs HEAD (incl. untrac
 epistle --diff main -o pr.md          # ... or vs any ref
 epistle --include-diffs --include-logs 10 -o ctx.md
 epistle --sort churn                  # most-edited files last (LLMs read the end best)
-epistle --remote user/repo            # shallow-clone + pack a remote repo
+epistle user/repo                     # shallow-clone + pack a remote repo (shorthand)
 epistle --remote https://github.com/x/y.git --remote-branch dev
 ```
+
+A lone `owner/repo` argument that doesn't exist as a local path is packed
+as a remote repository — no `--remote` flag needed. A local path of the
+same name always wins.
 
 ## Security
 
@@ -131,8 +146,13 @@ git ls-files -z src | epistle --stdin -0
 epistle --init                        # writes epistle.config.json
 ```
 
+The generated file carries a `"$schema"` reference, so editors autocomplete
+and validate it; Epistle also validates it at load time with field-level
+errors.
+
 ```jsonc
 {
+  "$schema": "https://unpkg.com/epistle/epistle.schema.json",
   "output": { "file": "context.md", "format": "markdown", "lineNumbers": false, "copy": false },
   "exclude": ["**/*.snap"],
   "maxFileSizeKB": 100,
@@ -160,10 +180,43 @@ CLI flags always override config. Select a profile with
 - After each pack: token-colored dashboard, top context hogs
   (`--hog-depth 0|N|auto`), and `--fit` context-window bars.
 
+## MCP server mode
+
+Expose Epistle's pack pipeline to agentic MCP clients (Claude Code,
+Cursor, …) over stdio:
+
+```bash
+epistle --mcp
+```
+
+Tools: `pack_codebase` (local dir, with compression / diff-vs-ref / token
+budgets / git history), `pack_remote` (shallow-clone `owner/repo`),
+`read_output` (page a pack by line range), `grep_output` (regex search a
+pack). Packs are stored server-side and addressed by ID, so only bounded
+summaries, chunks, and matches cross the protocol — a multi-megabyte pack
+costs the client a few hundred tokens until it asks for content.
+
+Example client config:
+
+```jsonc
+{ "mcpServers": { "epistle": { "command": "epistle", "args": ["--mcp"] } } }
+```
+
+## Shell completions
+
+```bash
+epistle completion bash > /etc/bash_completion.d/epistle
+epistle completion zsh  > "${fpath[1]}/_epistle"
+epistle completion fish > ~/.config/fish/completions/epistle.fish
+```
+
+Flags, formats, and recipes complete out of the box; `--profile` completes
+dynamically from the profiles in your `epistle.config.json`.
+
 ## All options
 
 Run `epistle --help` for the complete list.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
