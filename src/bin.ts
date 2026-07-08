@@ -39,7 +39,7 @@ import {
   type CompletionShell,
 } from "./lib/completions.js";
 
-const VERSION = "1.4.0";
+const VERSION = "1.5.0";
 
 type SortMode = "path" | "churn" | "size";
 
@@ -562,7 +562,8 @@ Shell completions:
 
     if (outputPath) {
       const outputRel = path.relative(rootDir, outputPath) || outputPath;
-      excludeGlobs.push(outputRel);
+      // ignore matchers expect forward slashes on every platform
+      excludeGlobs.push(outputRel.split(path.sep).join("/"));
     }
 
     if (lite) {

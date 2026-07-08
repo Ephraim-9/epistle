@@ -3,6 +3,35 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.0] - 2026-07-08
+
+### Fixed
+- **Gitignore negation across levels now follows git's cascade**: a
+  nested `.gitignore` containing `!pattern` can re-include a file that a
+  shallower `.gitignore` excluded (and vice versa). Previously nested
+  files could only add ignores, never rescue.
+- **Symlinked files are packed again**: the fast-glob settings silently
+  dropped symlinks-to-files (their dirent type is "symlink", so
+  `onlyFiles` filtered them before the scanner's resolution logic ever
+  ran). Symlink cycles and broken links remain safe — links are resolved
+  once and never followed during traversal — now covered by regression
+  tests.
+- **Monorepo tech-stack detection**: dependencies are merged from every
+  `package.json` in the pack (workspace members included), and non-JS
+  manifests (`Cargo.toml`, `go.mod`, `pyproject.toml`, …) are detected at
+  any depth, not just the repo root.
+- Windows: the output file's self-exclusion pattern used backslashes and
+  never matched; now normalized to forward slashes.
+
+### Added
+- CI now also runs the suite on Windows and macOS (Node 22) alongside
+  Linux Node 18/20/22; tests skip gracefully where a platform lacks
+  bash or symlink privileges.
+- Locking test that `--compress` is applied **before** `--max-tokens`
+  budget accounting (a file that fits the budget only after compression
+  must not be dropped) — this ordering was already correct, now it can't
+  regress.
+
 ## [1.4.0] - 2026-07-08
 
 ### Added

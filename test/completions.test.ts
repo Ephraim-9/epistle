@@ -40,7 +40,13 @@ test("all shells generate scripts containing every flag", () => {
   }
 });
 
-test("bash script passes bash -n syntax check", async () => {
+test("bash script passes bash -n syntax check", async (t) => {
+  try {
+    await execFileAsync("bash", ["--version"]);
+  } catch {
+    t.skip("bash not available on this platform");
+    return;
+  }
   const script = generateCompletionScript("bash", sampleOptions, sampleValues);
   const file = path.join(
     await fs.mkdtemp(path.join(os.tmpdir(), "epistle-comp-")),
@@ -51,35 +57,38 @@ test("bash script passes bash -n syntax check", async () => {
   await fs.rm(path.dirname(file), { recursive: true, force: true });
 });
 
+// Spawn via `node node_modules/tsx/dist/cli.mjs` instead of the .bin shim:
+// the shim is a shell script (or .cmd on Windows), which execFile cannot
+// run cross-platform.
+const tsxCli = path.resolve("node_modules/tsx/dist/cli.mjs");
+
 test("CLI: epistle completion <shell> prints a script, bad shell errors", async () => {
   const bin = path.resolve("src/bin.ts");
-  const tsx = path.resolve("node_modules/.bin/tsx");
 
-  const { stdout } = await execFileAsync(tsx, [bin, "completion", "bash"]);
+  const { stdout } = await execFileAsync(process.execPath, [tsxCli, bin, "completion", "bash"]);
   assert.ok(stdout.includes("_epistle"), "bash function present");
   assert.ok(stdout.includes("--format"), "real CLI flags present");
   assert.ok(stdout.includes("--max-tokens"), "real CLI flags present");
 
-  const { stdout: fishOut } = await execFileAsync(tsx, [bin, "completion", "fish"]);
+  const { stdout: fishOut } = await execFileAsync(process.execPath, [tsxCli, bin, "completion", "fish"]);
   assert.ok(fishOut.includes("complete -c epistle"), "fish completions present");
 
   await assert.rejects(
-    execFileAsync(tsx, [bin, "completion", "powershell"]),
+    execFileAsync(process.execPath, [tsxCli, bin, "completion", "powershell"]),
     /Supported shells/,
   );
 });
 
 test("CLI: completion --list-profiles prints profile names from config", async () => {
   const bin = path.resolve("src/bin.ts");
-  const tsx = path.resolve("node_modules/.bin/tsx");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "epistle-comp-cfg-"));
   await fs.writeFile(
     path.join(dir, "epistle.config.json"),
     JSON.stringify({ profiles: { tiny: {}, "pr-review": {} } }),
   );
   const { stdout } = await execFileAsync(
-    tsx,
-    [bin, "completion", "--list-profiles"],
+    process.execPath,
+    [tsxCli, bin, "completion", "--list-profiles"],
     { cwd: dir },
   );
   assert.deepEqual(stdout.trim().split("\n").sort(), ["pr-review", "tiny"]);
@@ -87,8 +96,8 @@ test("CLI: completion --list-profiles prints profile names from config", async (
   // Broken config must not break TAB completion
   await fs.writeFile(path.join(dir, "epistle.config.json"), "{oops");
   const { stdout: empty } = await execFileAsync(
-    tsx,
-    [bin, "completion", "--list-profiles"],
+    process.execPath,
+    [tsxCli, bin, "completion", "--list-profiles"],
     { cwd: dir },
   );
   assert.equal(empty.trim(), "");

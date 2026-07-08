@@ -201,20 +201,33 @@ async function buildNestedIgnores(
   return nested;
 }
 
-function isIgnoredByNested(
+/**
+ * Git-style cascading ignore decision: matchers apply from the root down,
+ * and each level can flip the state — so a nested `.gitignore` with a
+ * `!pattern` can re-include a file the root `.gitignore` excluded, and
+ * vice versa. `nestedIgnores` must be sorted shallowest-first.
+ */
+function isIgnoredCascading(
   relPath: string,
+  rootIg: Ignore,
   nestedIgnores: NestedIgnore[],
 ): boolean {
+  const rootResult = rootIg.test(relPath);
+  let ignored = rootResult.ignored && !rootResult.unignored;
+
   for (const { base, ig } of nestedIgnores) {
     const prefix = base + "/";
-    if (relPath.startsWith(prefix)) {
-      const sub = relPath.slice(prefix.length);
-      if (sub && ig.ignores(sub)) {
-        return true;
-      }
+    if (!relPath.startsWith(prefix)) continue;
+    const sub = relPath.slice(prefix.length);
+    if (!sub) continue;
+    const result = ig.test(sub);
+    if (result.unignored) {
+      ignored = false;
+    } else if (result.ignored) {
+      ignored = true;
     }
   }
-  return false;
+  return ignored;
 }
 
 /**
@@ -267,30 +280,41 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
       ? await scanPathsToPatterns(rootDir, options.scanPaths)
       : ["**/*"];
 
-  const allEntries = await fg(scanPatterns, {
-    cwd: rootDir,
-    dot: true,
-    onlyFiles: true,
-    unique: true,
-    followSymbolicLinks: false,
-    ignore: DEFAULT_IGNORE_PATTERNS,
-  });
+  // onlyFiles would silently drop symlinks-to-files (their dirent type is
+  // "symlink", not "file"), so ask for everything, mark directories, and
+  // filter those out cheaply. Symlinks are resolved (once, cycle-safe)
+  // in processEntry below; fast-glob itself never follows them.
+  const allEntries = (
+    await fg(scanPatterns, {
+      cwd: rootDir,
+      dot: true,
+      onlyFiles: false,
+      markDirectories: true,
+      unique: true,
+      followSymbolicLinks: false,
+      ignore: DEFAULT_IGNORE_PATTERNS,
+    })
+  ).filter((entry) => !entry.endsWith("/"));
 
-  const nestedIgnores = await buildNestedIgnores(rootDir, allEntries);
+  const nestedIgnores = (await buildNestedIgnores(rootDir, allEntries)).sort(
+    (a, b) => a.base.length - b.base.length,
+  );
 
   let filteredEntries = allEntries.filter(
-    (relative) =>
-      !ig.ignores(relative) && !isIgnoredByNested(relative, nestedIgnores),
+    (relative) => !isIgnoredCascading(relative, ig, nestedIgnores),
   );
 
   if (includeGlobs.length > 0) {
-    const includeEntries = await fg(includeGlobs, {
-      cwd: rootDir,
-      dot: true,
-      onlyFiles: true,
-      unique: true,
-      followSymbolicLinks: false,
-    });
+    const includeEntries = (
+      await fg(includeGlobs, {
+        cwd: rootDir,
+        dot: true,
+        onlyFiles: false,
+        markDirectories: true,
+        unique: true,
+        followSymbolicLinks: false,
+      })
+    ).filter((entry) => !entry.endsWith("/"));
 
     const merged = new Set<string>(filteredEntries);
     for (const rel of includeEntries) {
