@@ -3,6 +3,19 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.0] - 2026-07-08
+
+### Added
+- **Shell completions**: `epistle completion bash|zsh|fish` prints an
+  install-ready completion script (install instructions in the script
+  header). Scripts are generated from the live commander option list, so
+  they cannot drift from the real flag set. Fixed-vocabulary flags
+  (`--format`, `--sort`, `--persona`, `--encoding`, `--recipe`) complete
+  their values; `--profile` completes dynamically from the profile names
+  in the nearest `epistle.config.json` (via the quiet helper
+  `epistle completion --list-profiles`); `--output`/`--config` complete
+  file paths.
+
 ## [1.2.0] - 2026-07-07
 
 ### Added

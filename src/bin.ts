@@ -31,8 +31,14 @@ import {
 } from "./lib/git.js";
 import { getRecipe, recipeNames } from "./lib/recipes.js";
 import { applyProfile } from "./lib/config.js";
+import {
+  COMPLETION_SHELLS,
+  generateCompletionScript,
+  type CompletionOption,
+  type CompletionShell,
+} from "./lib/completions.js";
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 
 type SortMode = "path" | "churn" | "size";
 
@@ -221,7 +227,21 @@ async function main() {
       "--hog-depth <value>",
       "Depth for context hog report: 0 (files), >0 (directories), or 'auto'",
     )
-    .version(VERSION);
+    .version(VERSION)
+    .addHelpText(
+      "after",
+      `
+Shell completions:
+  epistle completion bash|zsh|fish   Print a completion script for your shell
+  (see the script header for install instructions)`,
+    );
+
+  // `epistle completion …` is handled before commander parses, so the
+  // word "completion" acts as a subcommand rather than a scan path.
+  if (process.argv[2] === "completion") {
+    await runCompletionCommand(process.argv.slice(3), program);
+    return;
+  }
 
   program.parse(process.argv);
   const scanPaths = program.args;
@@ -948,6 +968,64 @@ async function main() {
   if (remoteDir) {
     await fs.rm(remoteDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Handle `epistle completion <shell>` and the dynamic-value helper
+ * `epistle completion --list-profiles` (used by the generated scripts).
+ */
+async function runCompletionCommand(
+  args: string[],
+  program: Command,
+): Promise<void> {
+  const target = args[0];
+
+  if (target === "--list-profiles") {
+    // Called by completion scripts at TAB-time: never fail, never be noisy.
+    try {
+      const { config } = await loadConfig(process.cwd());
+      for (const name of Object.keys(config.profiles ?? {})) {
+        console.log(name);
+      }
+    } catch {
+      // Invalid or missing config: complete nothing
+    }
+    return;
+  }
+
+  if (!target || !COMPLETION_SHELLS.includes(target as CompletionShell)) {
+    console.error(
+      chalk.red(
+        `Usage: epistle completion <shell>. Supported shells: ${COMPLETION_SHELLS.join(", ")}.`,
+      ),
+    );
+    process.exit(1);
+  }
+
+  const options: CompletionOption[] = program.options.map((opt) => ({
+    long: opt.long ?? undefined,
+    short: opt.short ?? undefined,
+    takesValue: /[<[]/.test(opt.flags),
+    description: opt.description,
+  }));
+  options.push({
+    long: "--help",
+    short: "-h",
+    takesValue: false,
+    description: "Display help for epistle",
+  });
+
+  const values = {
+    "--format": [...OUTPUT_FORMATS],
+    "--persona": ["architect", "security", "refactor", "arch", "sec", "ref"],
+    "--sort": ["path", "churn", "size"],
+    "--encoding": [...TOKEN_ENCODINGS],
+    "--recipe": recipeNames(),
+  };
+
+  process.stdout.write(
+    generateCompletionScript(target as CompletionShell, options, values),
+  );
 }
 
 function parseHogDepth(raw?: string): { mode: HogMode; depth?: number } {
