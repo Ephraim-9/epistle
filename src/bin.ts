@@ -30,6 +30,7 @@ import {
   remoteRepoName,
 } from "./lib/git.js";
 import { getRecipe, recipeNames } from "./lib/recipes.js";
+import { applyTokenBudget } from "./lib/pack.js";
 import { applyProfile } from "./lib/config.js";
 import {
   COMPLETION_SHELLS,
@@ -38,7 +39,7 @@ import {
   type CompletionShell,
 } from "./lib/completions.js";
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 
 type SortMode = "path" | "churn" | "size";
 
@@ -224,6 +225,10 @@ async function main() {
     .option("--config <path>", `Path to config file (default: ${CONFIG_FILE_NAME})`)
     .option("--init", "Create a starter epistle.config.json and exit")
     .option(
+      "--mcp",
+      "Run as an MCP server over stdio (tools: pack_codebase, pack_remote, read_output, grep_output)",
+    )
+    .option(
       "--hog-depth <value>",
       "Depth for context hog report: 0 (files), >0 (directories), or 'auto'",
     )
@@ -240,6 +245,19 @@ Shell completions:
   // word "completion" acts as a subcommand rather than a scan path.
   if (process.argv[2] === "completion") {
     await runCompletionCommand(process.argv.slice(3), program);
+    return;
+  }
+
+  // MCP server mode: stdout belongs to the protocol, so this must run
+  // before anything can print. The process stays alive on the transport.
+  if (process.argv.includes("--mcp")) {
+    const { createEpistleMcpServer } = await import("./lib/mcp.js");
+    const { StdioServerTransport } = await import(
+      "@modelcontextprotocol/sdk/server/stdio.js"
+    );
+    const server = createEpistleMcpServer(VERSION);
+    await server.connect(new StdioServerTransport());
+    console.error("Epistle MCP server listening on stdio.");
     return;
   }
 
@@ -717,23 +735,14 @@ Shell completions:
       await formatOutput(files, formatOpts);
 
     // Token budget enforcement: drop the heaviest files until the pack fits.
-    const omittedForBudget: string[] = [];
+    let omittedForBudget: string[] = [];
     if (maxTokens !== undefined && totalTokens > maxTokens) {
-      const byTokensDesc = [...fileTokenStats].sort(
-        (a, b) => b.tokens - a.tokens,
+      omittedForBudget = applyTokenBudget(
+        files,
+        fileTokenStats,
+        totalTokens,
+        maxTokens,
       );
-      const filesByPath = new Map(files.map((f) => [f.path, f]));
-      let estimated = totalTokens;
-      for (const stat of byTokensDesc) {
-        if (estimated <= maxTokens) break;
-        if (stat.path === "package.json") continue; // always keep the manifest
-        const file = filesByPath.get(stat.path);
-        if (!file || !file.content) continue;
-        file.isOmitted = true;
-        delete file.content;
-        omittedForBudget.push(stat.path);
-        estimated -= stat.tokens;
-      }
       ({ output, totalTokens, fileTokenStats, dirTokenMap, treeText } =
         await formatOutput(files, formatOpts));
     }

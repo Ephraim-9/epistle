@@ -3,6 +3,32 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.0] - 2026-07-08
+
+### Added
+- **MCP server mode**: `epistle --mcp` runs a Model Context Protocol
+  server over stdio (via `@modelcontextprotocol/sdk`), so agentic clients
+  like Claude Code can pack and query codebases live. Four tools:
+  - `pack_codebase` — pack a local directory (supports scanPaths,
+    diff-vs-ref, compression, comment stripping, token budgets, churn
+    sort, git logs/diffs);
+  - `pack_remote` — shallow-clone and pack a remote repo (`user/repo`
+    shorthand supported), clone cleaned up afterwards;
+  - `read_output` — page through a pack by line range (max 2000
+    lines/call);
+  - `grep_output` — regex search with line numbers and context.
+  Packs live in temp files addressed by ID; only bounded summaries,
+  chunks, and matches cross the protocol, so multi-megabyte packs never
+  flood the client's context.
+- New `packDirectory()` engine module (`lib/pack.ts`) shared by the MCP
+  server; the CLI's token-budget logic now reuses it too.
+
+### Notes
+- This reverses the v1.0.0 decision to skip MCP; rationale updated in
+  `docs/RESEARCH.md` (the market moved — Repomix and code2prompt both
+  ship server modes, and MCP is now the default way agents consume
+  tools).
+
 ## [1.3.0] - 2026-07-08
 
 ### Added

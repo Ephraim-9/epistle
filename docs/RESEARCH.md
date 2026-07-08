@@ -190,6 +190,19 @@ The most feature-complete tool in the space. Key capabilities:
 > signature extractor achieves comparable reduction without native/wasm
 > install weight), and split-output (modern 200k+ windows and `--max-tokens`
 > cover the need).
+>
+> **Revision (2026-07-08, v1.4.0): the MCP decision above was reversed.**
+> The market moved: MCP is now how agentic tools (Claude Code, Cursor,
+> Windsurf) consume external capabilities live, and both Repomix and
+> code2prompt ship server modes. `epistle --mcp` now exposes
+> `pack_codebase` / `pack_remote` / `read_output` / `grep_output` over
+> stdio. The original daemon-lifecycle concern was answered by design:
+> packs are stored in temp files and addressed by ID, only bounded
+> summaries/chunks/grep results cross the protocol, and the server is a
+> thin layer over the same `packDirectory()` pipeline the CLI uses — no
+> watch loops, no state beyond the pack registry. Watch mode remains
+> unbuilt (an MCP client re-packs on demand, which covers the use case
+> with none of the file-watcher complexity).
 
 **v0.4.0 — Correctness + parity foundations**
 config file (`epistle.config.json` + `--init`), `.epistleignore`, nested
