@@ -39,7 +39,7 @@ import {
   type CompletionShell,
 } from "./lib/completions.js";
 
-const VERSION = "1.6.0";
+const VERSION = "1.7.0";
 
 type SortMode = "path" | "churn" | "size";
 
@@ -121,7 +121,8 @@ async function main() {
     )
     .argument(
       "[paths...]",
-      "Files or directories to pack (default: current directory)",
+      "Files or directories to pack (default: current directory). A lone " +
+        '"owner/repo" that does not exist locally is packed as a remote repo.',
     )
     .option("-o, --output <file>", "Output file path")
     .option("-c, --copy", "Copy the generated context to the clipboard")
@@ -503,20 +504,41 @@ Shell completions:
       process.exit(1);
     }
   }
-  const effectiveScanPaths = stdinPaths ?? scanPaths;
+  let effectiveScanPaths = stdinPaths ?? scanPaths;
+
+  // Bare "owner/repo" shorthand (like `repomix owner/repo`): a single
+  // positional that looks like a GitHub slug and doesn't exist locally is
+  // treated as a remote, no --remote flag needed.
+  let remoteTarget = opts.remote;
+  if (
+    !remoteTarget &&
+    !opts.stdin &&
+    effectiveScanPaths.length === 1 &&
+    /^[\w][\w.-]*\/[\w][\w.-]*$/.test(effectiveScanPaths[0])
+  ) {
+    const candidate = effectiveScanPaths[0];
+    const localExists = await fs
+      .access(path.resolve(rootDir, candidate))
+      .then(() => true)
+      .catch(() => false);
+    if (!localExists) {
+      remoteTarget = candidate;
+      effectiveScanPaths = [];
+    }
+  }
 
   // Remote repository ingestion
   let remoteDir: string | undefined;
-  if (opts.remote) {
-    info(chalk.cyan(`⬇ Cloning ${opts.remote} (shallow)...`));
+  if (remoteTarget) {
+    info(chalk.cyan(`⬇ Cloning ${remoteTarget} (shallow)...`));
     try {
-      remoteDir = await cloneRemote(opts.remote, opts.remoteBranch);
+      remoteDir = await cloneRemote(remoteTarget, opts.remoteBranch);
     } catch (err) {
       console.error(chalk.red((err as Error).message));
       process.exit(1);
     }
   }
-  /** Directory actually scanned (clone dir for --remote, else cwd) */
+  /** Directory actually scanned (clone dir for a remote, else cwd) */
   const scanRoot = remoteDir ?? rootDir;
 
   let outputPath: string | undefined;
@@ -524,8 +546,8 @@ Shell completions:
   const configuredOutput = opts.output ?? config.output?.file;
   if (configuredOutput) {
     outputPath = path.resolve(rootDir, configuredOutput);
-  } else if (opts.remote) {
-    const defaultName = `epistle-${remoteRepoName(opts.remote)}${extensionForFormat(format)}`;
+  } else if (remoteTarget) {
+    const defaultName = `epistle-${remoteRepoName(remoteTarget)}${extensionForFormat(format)}`;
     outputPath = path.join(rootDir, defaultName);
     usedAutoOutput = true;
   } else if (persona) {

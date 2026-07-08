@@ -3,6 +3,29 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.7.0] - 2026-07-08
+
+### Added
+- **Bare `owner/repo` remote shorthand**: `epistle facebook/react` packs
+  the remote repo without the `--remote` flag (matching Repomix's 2026
+  change). A single positional that looks like a GitHub slug and does
+  **not** exist locally is cloned; a local path of the same name always
+  wins, so nothing existing is shadowed.
+
+### Security
+- **Argument-injection hardening** (same class Repomix patched in 2026):
+  remote URLs, `--remote-branch`, and `--diff` refs that begin with `-`
+  are now rejected before reaching git, and `--` / end-of-options
+  separators are inserted in `git clone` and `git diff` so a
+  user-supplied value can never be parsed as a git option (e.g.
+  `--upload-pack=<cmd>`, `--output=<path>`).
+
+### Notes
+- Competitive landscape re-scanned; `docs/RESEARCH.md` gains a dated
+  re-scan section recording what moved (Repomix watch mode, shorthand,
+  cwd-relative paths, compression resilience, the injection fix) and
+  Epistle's response to each.
+
 ## [1.6.0] - 2026-07-08
 
 ### Added

@@ -75,6 +75,27 @@ test("getLogText returns recent commit subjects", async (t) => {
   assert.ok(log.includes("initial commit"));
 });
 
+test("option-shaped refs and URLs are rejected (argument injection)", async (t) => {
+  const repo = await makeGitFixture();
+  t.after(() => fs.rm(repo, { recursive: true, force: true }));
+
+  // ref parsed as a git-diff option must be refused, not executed
+  assert.equal(
+    await getChangedFiles(repo, "--output=/tmp/epistle-injection-test"),
+    undefined,
+  );
+
+  const { cloneRemote } = await import("../src/lib/git.js");
+  await assert.rejects(
+    cloneRemote("--upload-pack=touch /tmp/pwned"),
+    /Invalid remote URL/,
+  );
+  await assert.rejects(
+    cloneRemote("octocat/Hello-World", "--upload-pack=touch /tmp/pwned"),
+    /Invalid branch name/,
+  );
+});
+
 test("getChurnCounts counts per-file edits", async (t) => {
   const repo = await makeGitFixture();
   t.after(() => fs.rm(repo, { recursive: true, force: true }));
