@@ -3,6 +3,23 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.1] - 2026-07-08
+
+### Fixed
+- Package distribution verified end-to-end (`npm pack` → global install
+  → run): bin symlink, shebang, and files whitelist all work. The
+  whitelist referenced a LICENSE file that didn't exist — an MIT LICENSE
+  now ships, with the matching `license` field plus `repository`,
+  `bugs`, `homepage`, and `keywords` metadata (npm strongly warns
+  without them).
+- `prepublishOnly` now builds and runs the full test suite, so a stale
+  or broken `dist/` can never be published.
+
+### Notes
+- Homebrew formula and Docker image were evaluated and deliberately
+  skipped; rationale in `docs/RESEARCH.md` (npm/npx covers every real
+  use with less friction than either).
+
 ## [1.5.0] - 2026-07-08
 
 ### Fixed

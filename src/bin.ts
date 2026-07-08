@@ -39,7 +39,7 @@ import {
   type CompletionShell,
 } from "./lib/completions.js";
 
-const VERSION = "1.5.0";
+const VERSION = "1.5.1";
 
 type SortMode = "path" | "churn" | "size";
 

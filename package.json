@@ -1,8 +1,29 @@
 {
   "name": "epistle",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Epistle – a production-grade Node.js CLI that packs a local codebase into a single, LLM-friendly context file.",
   "private": false,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ephraim-9/epistle.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Ephraim-9/epistle/issues"
+  },
+  "homepage": "https://github.com/Ephraim-9/epistle#readme",
+  "keywords": [
+    "llm",
+    "context",
+    "ai",
+    "prompt",
+    "codebase",
+    "pack",
+    "mcp",
+    "claude",
+    "tokens",
+    "cli"
+  ],
   "bin": {
     "epistle": "dist/bin.js"
   },
@@ -11,6 +32,7 @@
     "dev": "tsx src/bin.ts",
     "start": "node dist/bin.js",
     "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build && npm test",
     "lint": "eslint \"src/**/*.{ts,tsx}\" || echo \"No ESLint configured\""
   },
   "engines": {

@@ -203,6 +203,20 @@ The most feature-complete tool in the space. Key capabilities:
 > watch loops, no state beyond the pack registry. Watch mode remains
 > unbuilt (an MCP client re-packs on demand, which covers the use case
 > with none of the file-watcher complexity).
+>
+> **Distribution decision (2026-07-08, v1.5.1):** the npm tarball is the
+> single supported channel, verified end-to-end (`npm pack` → global
+> install → pack/completions smoke test). Homebrew and Docker — which
+> Repomix ships — were evaluated and **deliberately skipped**:
+> - *Homebrew*: a formula (or tap) must be re-released for every
+>   version, and Epistle's audience already has Node — `npm i -g
+>   epistle` / `npx epistle` is strictly less friction than adding a
+>   brew dependency on the node keg. Revisit only if a standalone
+>   compiled binary (bun/pkg) ever ships for non-Node users.
+> - *Docker*: packing requires bind-mounting the target repo and
+>   fighting output-file uid/gid; every real use (local or CI) is
+>   served better by `npx epistle`. An image adds a registry, build
+>   pipeline, and version skew for zero reach.
 
 **v0.4.0 — Correctness + parity foundations**
 config file (`epistle.config.json` + `--init`), `.epistleignore`, nested
