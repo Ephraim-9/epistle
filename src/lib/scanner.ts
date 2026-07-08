@@ -48,6 +48,35 @@ export interface ScanProjectResult {
 
 export const DEFAULT_MAX_FILE_SIZE_BYTES = 100 * 1024;
 
+/**
+ * Cap on concurrent filesystem operations during the read phase.
+ * High enough to keep the disk busy, low enough to stay clear of
+ * EMFILE limits (default ulimit is 1024 on most Linux systems).
+ */
+const READ_CONCURRENCY = 64;
+
+/** Run an async mapper over items with at most `limit` in flight. */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 /** Patterns always excluded regardless of ignore files. */
 export const DEFAULT_IGNORE_PATTERNS = [
   "node_modules/**",
@@ -172,20 +201,33 @@ async function buildNestedIgnores(
   return nested;
 }
 
-function isIgnoredByNested(
+/**
+ * Git-style cascading ignore decision: matchers apply from the root down,
+ * and each level can flip the state — so a nested `.gitignore` with a
+ * `!pattern` can re-include a file the root `.gitignore` excluded, and
+ * vice versa. `nestedIgnores` must be sorted shallowest-first.
+ */
+function isIgnoredCascading(
   relPath: string,
+  rootIg: Ignore,
   nestedIgnores: NestedIgnore[],
 ): boolean {
+  const rootResult = rootIg.test(relPath);
+  let ignored = rootResult.ignored && !rootResult.unignored;
+
   for (const { base, ig } of nestedIgnores) {
     const prefix = base + "/";
-    if (relPath.startsWith(prefix)) {
-      const sub = relPath.slice(prefix.length);
-      if (sub && ig.ignores(sub)) {
-        return true;
-      }
+    if (!relPath.startsWith(prefix)) continue;
+    const sub = relPath.slice(prefix.length);
+    if (!sub) continue;
+    const result = ig.test(sub);
+    if (result.unignored) {
+      ignored = false;
+    } else if (result.ignored) {
+      ignored = true;
     }
   }
-  return false;
+  return ignored;
 }
 
 /**
@@ -238,30 +280,41 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
       ? await scanPathsToPatterns(rootDir, options.scanPaths)
       : ["**/*"];
 
-  const allEntries = await fg(scanPatterns, {
-    cwd: rootDir,
-    dot: true,
-    onlyFiles: true,
-    unique: true,
-    followSymbolicLinks: false,
-    ignore: DEFAULT_IGNORE_PATTERNS,
-  });
+  // onlyFiles would silently drop symlinks-to-files (their dirent type is
+  // "symlink", not "file"), so ask for everything, mark directories, and
+  // filter those out cheaply. Symlinks are resolved (once, cycle-safe)
+  // in processEntry below; fast-glob itself never follows them.
+  const allEntries = (
+    await fg(scanPatterns, {
+      cwd: rootDir,
+      dot: true,
+      onlyFiles: false,
+      markDirectories: true,
+      unique: true,
+      followSymbolicLinks: false,
+      ignore: DEFAULT_IGNORE_PATTERNS,
+    })
+  ).filter((entry) => !entry.endsWith("/"));
 
-  const nestedIgnores = await buildNestedIgnores(rootDir, allEntries);
+  const nestedIgnores = (await buildNestedIgnores(rootDir, allEntries)).sort(
+    (a, b) => a.base.length - b.base.length,
+  );
 
   let filteredEntries = allEntries.filter(
-    (relative) =>
-      !ig.ignores(relative) && !isIgnoredByNested(relative, nestedIgnores),
+    (relative) => !isIgnoredCascading(relative, ig, nestedIgnores),
   );
 
   if (includeGlobs.length > 0) {
-    const includeEntries = await fg(includeGlobs, {
-      cwd: rootDir,
-      dot: true,
-      onlyFiles: true,
-      unique: true,
-      followSymbolicLinks: false,
-    });
+    const includeEntries = (
+      await fg(includeGlobs, {
+        cwd: rootDir,
+        dot: true,
+        onlyFiles: false,
+        markDirectories: true,
+        unique: true,
+        followSymbolicLinks: false,
+      })
+    ).filter((entry) => !entry.endsWith("/"));
 
     const merged = new Set<string>(filteredEntries);
     for (const rel of includeEntries) {
@@ -270,20 +323,25 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
     filteredEntries = Array.from(merged);
   }
 
-  const files: ScannedFile[] = [];
   const suspiciousSkipped: string[] = [];
-
+  const readableEntries: string[] = [];
   for (const relative of filteredEntries) {
     if (isSuspiciousFile(relative.split(path.sep).join(path.posix.sep))) {
       suspiciousSkipped.push(relative);
-      continue;
+    } else {
+      readableEntries.push(relative);
     }
+  }
+
+  const processEntry = async (
+    relative: string,
+  ): Promise<ScannedFile | undefined> => {
     // fast-glob returns paths relative to cwd
     const absolutePath = path.join(rootDir, relative);
 
     const stat = await fs.lstat(absolutePath);
     if (!stat.isFile() && !stat.isSymbolicLink()) {
-      continue;
+      return undefined;
     }
 
     // For symlinks, avoid following them deeply; just resolve once and treat as a single file
@@ -297,11 +355,11 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
         targetStat = await fs.stat(real);
         if (!targetStat.isFile()) {
           // We only care about files; skip symlinks to directories or others
-          continue;
+          return undefined;
         }
       } catch {
         // Broken symlink; skip
-        continue;
+        return undefined;
       }
     }
 
@@ -316,25 +374,26 @@ export async function scanProject(options: ScannerOptions): Promise<ScanProjectR
       isOversized: false,
     };
 
-    // Binary detection
-    const binary = await isBinaryFile(effectivePath);
-    scanned.isBinary = binary;
-
-    if (binary) {
-      files.push(scanned);
-      continue;
-    }
-
     if (sizeBytes > maxFileSizeBytes) {
-      scanned.isOversized = true;
-      files.push(scanned);
-      continue;
+      // Oversized: sniff for binary without reading the whole file
+      scanned.isBinary = await isBinaryFile(effectivePath);
+      scanned.isOversized = !scanned.isBinary;
+      return scanned;
     }
 
-    const content = await fs.readFile(effectivePath, "utf8");
-    scanned.content = content;
-    files.push(scanned);
-  }
+    // Read once; binary-detect on the buffer instead of re-opening the file
+    const buffer = await fs.readFile(effectivePath);
+    scanned.isBinary = await isBinaryFile(buffer, buffer.length);
+    if (!scanned.isBinary) {
+      scanned.content = buffer.toString("utf8");
+    }
+    return scanned;
+  };
+
+  const processed = await mapLimit(readableEntries, READ_CONCURRENCY, processEntry);
+  const files: ScannedFile[] = processed.filter(
+    (f): f is ScannedFile => f !== undefined,
+  );
 
   files.sort((a, b) => {
     const aIsPkg = a.path === "package.json";

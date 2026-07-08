@@ -19,7 +19,7 @@ import {
   type TokenEncoding,
 } from "./lib/formatter.js";
 import { initConfig, loadConfig, CONFIG_FILE_NAME } from "./lib/config.js";
-import { transformContent } from "./lib/compress.js";
+import { transformContentAsync } from "./lib/compress.js";
 import {
   cloneRemote,
   getChangedFiles,
@@ -30,9 +30,16 @@ import {
   remoteRepoName,
 } from "./lib/git.js";
 import { getRecipe, recipeNames } from "./lib/recipes.js";
+import { applyTokenBudget } from "./lib/pack.js";
 import { applyProfile } from "./lib/config.js";
+import {
+  COMPLETION_SHELLS,
+  generateCompletionScript,
+  type CompletionOption,
+  type CompletionShell,
+} from "./lib/completions.js";
 
-const VERSION = "1.0.0";
+const VERSION = "1.7.0";
 
 type SortMode = "path" | "churn" | "size";
 
@@ -114,7 +121,8 @@ async function main() {
     )
     .argument(
       "[paths...]",
-      "Files or directories to pack (default: current directory)",
+      "Files or directories to pack (default: current directory). A lone " +
+        '"owner/repo" that does not exist locally is packed as a remote repo.',
     )
     .option("-o, --output <file>", "Output file path")
     .option("-c, --copy", "Copy the generated context to the clipboard")
@@ -218,10 +226,41 @@ async function main() {
     .option("--config <path>", `Path to config file (default: ${CONFIG_FILE_NAME})`)
     .option("--init", "Create a starter epistle.config.json and exit")
     .option(
+      "--mcp",
+      "Run as an MCP server over stdio (tools: pack_codebase, pack_remote, read_output, grep_output)",
+    )
+    .option(
       "--hog-depth <value>",
       "Depth for context hog report: 0 (files), >0 (directories), or 'auto'",
     )
-    .version(VERSION);
+    .version(VERSION)
+    .addHelpText(
+      "after",
+      `
+Shell completions:
+  epistle completion bash|zsh|fish   Print a completion script for your shell
+  (see the script header for install instructions)`,
+    );
+
+  // `epistle completion …` is handled before commander parses, so the
+  // word "completion" acts as a subcommand rather than a scan path.
+  if (process.argv[2] === "completion") {
+    await runCompletionCommand(process.argv.slice(3), program);
+    return;
+  }
+
+  // MCP server mode: stdout belongs to the protocol, so this must run
+  // before anything can print. The process stays alive on the transport.
+  if (process.argv.includes("--mcp")) {
+    const { createEpistleMcpServer } = await import("./lib/mcp.js");
+    const { StdioServerTransport } = await import(
+      "@modelcontextprotocol/sdk/server/stdio.js"
+    );
+    const server = createEpistleMcpServer(VERSION);
+    await server.connect(new StdioServerTransport());
+    console.error("Epistle MCP server listening on stdio.");
+    return;
+  }
 
   program.parse(process.argv);
   const scanPaths = program.args;
@@ -465,20 +504,41 @@ async function main() {
       process.exit(1);
     }
   }
-  const effectiveScanPaths = stdinPaths ?? scanPaths;
+  let effectiveScanPaths = stdinPaths ?? scanPaths;
+
+  // Bare "owner/repo" shorthand (like `repomix owner/repo`): a single
+  // positional that looks like a GitHub slug and doesn't exist locally is
+  // treated as a remote, no --remote flag needed.
+  let remoteTarget = opts.remote;
+  if (
+    !remoteTarget &&
+    !opts.stdin &&
+    effectiveScanPaths.length === 1 &&
+    /^[\w][\w.-]*\/[\w][\w.-]*$/.test(effectiveScanPaths[0])
+  ) {
+    const candidate = effectiveScanPaths[0];
+    const localExists = await fs
+      .access(path.resolve(rootDir, candidate))
+      .then(() => true)
+      .catch(() => false);
+    if (!localExists) {
+      remoteTarget = candidate;
+      effectiveScanPaths = [];
+    }
+  }
 
   // Remote repository ingestion
   let remoteDir: string | undefined;
-  if (opts.remote) {
-    info(chalk.cyan(`⬇ Cloning ${opts.remote} (shallow)...`));
+  if (remoteTarget) {
+    info(chalk.cyan(`⬇ Cloning ${remoteTarget} (shallow)...`));
     try {
-      remoteDir = await cloneRemote(opts.remote, opts.remoteBranch);
+      remoteDir = await cloneRemote(remoteTarget, opts.remoteBranch);
     } catch (err) {
       console.error(chalk.red((err as Error).message));
       process.exit(1);
     }
   }
-  /** Directory actually scanned (clone dir for --remote, else cwd) */
+  /** Directory actually scanned (clone dir for a remote, else cwd) */
   const scanRoot = remoteDir ?? rootDir;
 
   let outputPath: string | undefined;
@@ -486,8 +546,8 @@ async function main() {
   const configuredOutput = opts.output ?? config.output?.file;
   if (configuredOutput) {
     outputPath = path.resolve(rootDir, configuredOutput);
-  } else if (opts.remote) {
-    const defaultName = `epistle-${remoteRepoName(opts.remote)}${extensionForFormat(format)}`;
+  } else if (remoteTarget) {
+    const defaultName = `epistle-${remoteRepoName(remoteTarget)}${extensionForFormat(format)}`;
     outputPath = path.join(rootDir, defaultName);
     usedAutoOutput = true;
   } else if (persona) {
@@ -524,7 +584,8 @@ async function main() {
 
     if (outputPath) {
       const outputRel = path.relative(rootDir, outputPath) || outputPath;
-      excludeGlobs.push(outputRel);
+      // ignore matchers expect forward slashes on every platform
+      excludeGlobs.push(outputRel.split(path.sep).join("/"));
     }
 
     if (lite) {
@@ -652,11 +713,12 @@ async function main() {
     let originalChars = 0;
     let transformedChars = 0;
     let compressedFileCount = 0;
+    let astCompressedCount = 0;
     if (removeComments || removeEmptyLines || compress) {
       for (const file of files) {
         if (!file.content || file.isBinary || file.isOversized) continue;
         originalChars += file.content.length;
-        const { content, compressed } = transformContent(
+        const { content, compressed, engine } = await transformContentAsync(
           file.path,
           file.content,
           { removeComments, removeEmptyLines, compress },
@@ -664,6 +726,16 @@ async function main() {
         file.content = content;
         transformedChars += content.length;
         if (compressed) compressedFileCount++;
+        if (engine === "ast") astCompressedCount++;
+      }
+      if (compress) {
+        verbose(
+          chalk.dim(
+            astCompressedCount > 0
+              ? `Compression engine: tree-sitter AST (${astCompressedCount} files) + line heuristic (${compressedFileCount - astCompressedCount}).`
+              : "Compression engine: line heuristic (tree-sitter not available or no supported files).",
+          ),
+        );
       }
     }
 
@@ -694,27 +766,19 @@ async function main() {
     }
 
     let { output, totalTokens, fileTokenStats, dirTokenMap, treeText } =
-      formatOutput(files, formatOpts);
+      await formatOutput(files, formatOpts);
 
     // Token budget enforcement: drop the heaviest files until the pack fits.
-    const omittedForBudget: string[] = [];
+    let omittedForBudget: string[] = [];
     if (maxTokens !== undefined && totalTokens > maxTokens) {
-      const byTokensDesc = [...fileTokenStats].sort(
-        (a, b) => b.tokens - a.tokens,
+      omittedForBudget = applyTokenBudget(
+        files,
+        fileTokenStats,
+        totalTokens,
+        maxTokens,
       );
-      let estimated = totalTokens;
-      for (const stat of byTokensDesc) {
-        if (estimated <= maxTokens) break;
-        if (stat.path === "package.json") continue; // always keep the manifest
-        const file = files.find((f) => f.path === stat.path);
-        if (!file || !file.content) continue;
-        file.isOmitted = true;
-        delete file.content;
-        omittedForBudget.push(stat.path);
-        estimated -= stat.tokens;
-      }
       ({ output, totalTokens, fileTokenStats, dirTokenMap, treeText } =
-        formatOutput(files, formatOpts));
+        await formatOutput(files, formatOpts));
     }
 
     if (opts.dryRun) {
@@ -947,6 +1011,64 @@ async function main() {
   if (remoteDir) {
     await fs.rm(remoteDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Handle `epistle completion <shell>` and the dynamic-value helper
+ * `epistle completion --list-profiles` (used by the generated scripts).
+ */
+async function runCompletionCommand(
+  args: string[],
+  program: Command,
+): Promise<void> {
+  const target = args[0];
+
+  if (target === "--list-profiles") {
+    // Called by completion scripts at TAB-time: never fail, never be noisy.
+    try {
+      const { config } = await loadConfig(process.cwd());
+      for (const name of Object.keys(config.profiles ?? {})) {
+        console.log(name);
+      }
+    } catch {
+      // Invalid or missing config: complete nothing
+    }
+    return;
+  }
+
+  if (!target || !COMPLETION_SHELLS.includes(target as CompletionShell)) {
+    console.error(
+      chalk.red(
+        `Usage: epistle completion <shell>. Supported shells: ${COMPLETION_SHELLS.join(", ")}.`,
+      ),
+    );
+    process.exit(1);
+  }
+
+  const options: CompletionOption[] = program.options.map((opt) => ({
+    long: opt.long ?? undefined,
+    short: opt.short ?? undefined,
+    takesValue: /[<[]/.test(opt.flags),
+    description: opt.description,
+  }));
+  options.push({
+    long: "--help",
+    short: "-h",
+    takesValue: false,
+    description: "Display help for epistle",
+  });
+
+  const values = {
+    "--format": [...OUTPUT_FORMATS],
+    "--persona": ["architect", "security", "refactor", "arch", "sec", "ref"],
+    "--sort": ["path", "churn", "size"],
+    "--encoding": [...TOKEN_ENCODINGS],
+    "--recipe": recipeNames(),
+  };
+
+  process.stdout.write(
+    generateCompletionScript(target as CompletionShell, options, values),
+  );
 }
 
 function parseHogDepth(raw?: string): { mode: HogMode; depth?: number } {

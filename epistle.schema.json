@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://unpkg.com/epistle/epistle.schema.json",
+  "title": "Epistle configuration",
+  "description": "Configuration for the Epistle codebase-to-LLM-context CLI (epistle.config.json). Every field is optional; CLI flags always win over config values.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference for editor autocomplete and validation."
+    },
+    "output": { "$ref": "#/definitions/output" },
+    "include": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Glob patterns to force-include after ignore/exclude filtering."
+    },
+    "exclude": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Additional glob patterns to exclude from scanning."
+    },
+    "maxFileSizeKB": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Skip files larger than this many kilobytes (default: 100)."
+    },
+    "persona": { "$ref": "#/definitions/persona" },
+    "lite": {
+      "type": "boolean",
+      "description": "Lite mode: auto-prune heavy assets and data files."
+    },
+    "task": {
+      "type": "string",
+      "description": "Task or instructions appended to the context."
+    },
+    "removeComments": {
+      "type": "boolean",
+      "description": "Strip comments from source files."
+    },
+    "removeEmptyLines": {
+      "type": "boolean",
+      "description": "Remove blank lines from file contents."
+    },
+    "compress": {
+      "type": "boolean",
+      "description": "Signature-only compression: keep imports and declarations, elide bodies."
+    },
+    "maxTokens": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Drop the largest files until output fits within this token budget."
+    },
+    "sort": { "$ref": "#/definitions/sort" },
+    "includeDiffs": {
+      "type": "boolean",
+      "description": "Append working-tree and staged git diffs to the output."
+    },
+    "includeLogs": {
+      "type": ["boolean", "number"],
+      "description": "Append recent commit history: true for 20 commits, or a positive commit count."
+    },
+    "redact": {
+      "type": "boolean",
+      "description": "Automatic secret redaction (default: true)."
+    },
+    "encoding": {
+      "type": "string",
+      "enum": ["o200k_base", "cl100k_base"],
+      "description": "Tokenizer encoding for token counts (default: o200k_base)."
+    },
+    "profiles": {
+      "type": "object",
+      "description": "Named presets selected with --profile. Profile values override base config.",
+      "additionalProperties": { "$ref": "#/definitions/profile" }
+    }
+  },
+  "definitions": {
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Output file path."
+        },
+        "format": {
+          "type": "string",
+          "enum": ["markdown", "xml", "plain", "json"],
+          "description": "Output format (default: markdown)."
+        },
+        "lineNumbers": {
+          "type": "boolean",
+          "description": "Prefix file contents with line numbers."
+        },
+        "copy": {
+          "type": "boolean",
+          "description": "Copy the generated context to the clipboard."
+        }
+      }
+    },
+    "persona": {
+      "type": "string",
+      "enum": ["architect", "security", "refactor", "arch", "sec", "ref"],
+      "description": "Persona for the system header."
+    },
+    "sort": {
+      "type": "string",
+      "enum": ["path", "churn", "size"],
+      "description": "File order: path (default), churn (most-edited last), or size (largest last)."
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A named preset: any base config field except profiles.",
+      "properties": {
+        "output": { "$ref": "#/definitions/output" },
+        "include": { "type": "array", "items": { "type": "string" } },
+        "exclude": { "type": "array", "items": { "type": "string" } },
+        "maxFileSizeKB": { "type": "number", "exclusiveMinimum": 0 },
+        "persona": { "$ref": "#/definitions/persona" },
+        "lite": { "type": "boolean" },
+        "task": { "type": "string" },
+        "removeComments": { "type": "boolean" },
+        "removeEmptyLines": { "type": "boolean" },
+        "compress": { "type": "boolean" },
+        "maxTokens": { "type": "number", "exclusiveMinimum": 0 },
+        "sort": { "$ref": "#/definitions/sort" },
+        "includeDiffs": { "type": "boolean" },
+        "includeLogs": { "type": ["boolean", "number"] },
+        "redact": { "type": "boolean" },
+        "encoding": { "type": "string", "enum": ["o200k_base", "cl100k_base"] }
+      }
+    }
+  }
+}

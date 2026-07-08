@@ -1,12 +1,15 @@
 import path from "node:path";
-import { getEncoding, type TiktokenEncoding } from "js-tiktoken";
 import type { ScannedFile } from "./scanner.js";
 import { redactSecrets } from "./secrets.js";
+import {
+  getTokenCounter,
+  TOKEN_ENCODINGS,
+  type TokenCounter,
+  type TokenEncoding,
+} from "./tokenizer.js";
 
-export { redactSecrets };
-
-export const TOKEN_ENCODINGS = ["o200k_base", "cl100k_base"] as const;
-export type TokenEncoding = (typeof TOKEN_ENCODINGS)[number];
+export { redactSecrets, TOKEN_ENCODINGS };
+export type { TokenEncoding };
 
 export type OutputFormat = "markdown" | "xml" | "plain" | "json";
 
@@ -219,9 +222,8 @@ function getPersonaHeader(type: PersonaType): string {
 function computeFileTokenStats(
   files: ScannedFile[],
   redactedByPath: Map<string, string>,
-  encodingName: TokenEncoding = "o200k_base",
+  countTokens: TokenCounter,
 ): { fileTokenStats: FileTokenStat[]; totalTokens: number } {
-  const encoding = getEncoding(encodingName as TiktokenEncoding);
   const stats: FileTokenStat[] = [];
   let totalTokens = 0;
 
@@ -232,7 +234,7 @@ function computeFileTokenStats(
     }
 
     const contentForTokens = redactedByPath.get(file.path) ?? file.content;
-    const tokens = encoding.encode(contentForTokens).length;
+    const tokens = countTokens(contentForTokens);
     stats.push({ path: file.path, tokens });
     totalTokens += tokens;
   }
@@ -268,59 +270,63 @@ export function aggregateDirectoryTokens(
 
 function detectTechStack(files: ScannedFile[]): string[] {
   const techStack = new Set<string>();
-  const pkgFile = files.find(
-    (f) => f.path === "package.json" && typeof f.content === "string",
-  );
-  if (pkgFile?.content) {
+
+  // Merge dependencies from every package.json in the pack (monorepo
+  // workspaces: packages/*/package.json), not just the root manifest.
+  const deps: Record<string, unknown> = {};
+  for (const file of files) {
+    const isManifest =
+      file.path === "package.json" || file.path.endsWith("/package.json");
+    if (!isManifest || typeof file.content !== "string") continue;
     try {
-      const pkg = JSON.parse(pkgFile.content) as {
+      const pkg = JSON.parse(file.content) as {
         dependencies?: Record<string, unknown>;
         devDependencies?: Record<string, unknown>;
       };
-      const deps = {
-        ...(pkg.dependencies ?? {}),
-        ...(pkg.devDependencies ?? {}),
-      };
-
-      const hasDep = (name: string) =>
-        Object.prototype.hasOwnProperty.call(deps, name);
-
-      // Frontend frameworks
-      if (hasDep("react")) techStack.add("React");
-      if (hasDep("next")) techStack.add("Next.js");
-      if (hasDep("vue")) techStack.add("Vue");
-      if (hasDep("@angular/core")) techStack.add("Angular");
-      if (hasDep("svelte")) techStack.add("Svelte");
-      if (hasDep("remix")) techStack.add("Remix");
-
-      // Backend frameworks
-      if (hasDep("express")) techStack.add("Express");
-      if (hasDep("koa")) techStack.add("Koa");
-      if (hasDep("fastify")) techStack.add("Fastify");
-      if (hasDep("@nestjs/core")) techStack.add("NestJS");
-      if (hasDep("hapi")) techStack.add("hapi");
-      if (hasDep("apollo-server")) techStack.add("Apollo Server");
-      if (hasDep("graphql-yoga")) techStack.add("GraphQL Yoga");
-
-      // Data / ORM
-      if (hasDep("mongoose")) techStack.add("Mongoose");
-      if (hasDep("prisma")) techStack.add("Prisma");
-      if (hasDep("typeorm")) techStack.add("TypeORM");
-      if (hasDep("sequelize")) techStack.add("Sequelize");
+      Object.assign(deps, pkg.dependencies ?? {}, pkg.devDependencies ?? {});
     } catch {
       // Ignore invalid package.json content for metadata purposes
     }
   }
 
-  // Non-JS ecosystems, detected by manifest presence
-  const paths = new Set(files.map((f) => f.path));
-  if (paths.has("Cargo.toml")) techStack.add("Rust");
-  if (paths.has("go.mod")) techStack.add("Go");
-  if (paths.has("pyproject.toml") || paths.has("requirements.txt")) {
+  const hasDep = (name: string) =>
+    Object.prototype.hasOwnProperty.call(deps, name);
+
+  // Frontend frameworks
+  if (hasDep("react")) techStack.add("React");
+  if (hasDep("next")) techStack.add("Next.js");
+  if (hasDep("vue")) techStack.add("Vue");
+  if (hasDep("@angular/core")) techStack.add("Angular");
+  if (hasDep("svelte")) techStack.add("Svelte");
+  if (hasDep("remix")) techStack.add("Remix");
+
+  // Backend frameworks
+  if (hasDep("express")) techStack.add("Express");
+  if (hasDep("koa")) techStack.add("Koa");
+  if (hasDep("fastify")) techStack.add("Fastify");
+  if (hasDep("@nestjs/core")) techStack.add("NestJS");
+  if (hasDep("hapi")) techStack.add("hapi");
+  if (hasDep("apollo-server")) techStack.add("Apollo Server");
+  if (hasDep("graphql-yoga")) techStack.add("GraphQL Yoga");
+
+  // Data / ORM
+  if (hasDep("mongoose")) techStack.add("Mongoose");
+  if (hasDep("prisma")) techStack.add("Prisma");
+  if (hasDep("typeorm")) techStack.add("TypeORM");
+  if (hasDep("sequelize")) techStack.add("Sequelize");
+
+  // Non-JS ecosystems, detected by manifest presence at any depth
+  // (monorepos often nest Cargo.toml / go.mod inside workspace members)
+  const names = new Set(
+    files.map((f) => f.path.slice(f.path.lastIndexOf("/") + 1)),
+  );
+  if (names.has("Cargo.toml")) techStack.add("Rust");
+  if (names.has("go.mod")) techStack.add("Go");
+  if (names.has("pyproject.toml") || names.has("requirements.txt")) {
     techStack.add("Python");
   }
-  if (paths.has("Gemfile")) techStack.add("Ruby");
-  if (paths.has("pom.xml") || paths.has("build.gradle")) techStack.add("Java");
+  if (names.has("Gemfile")) techStack.add("Ruby");
+  if (names.has("pom.xml") || names.has("build.gradle")) techStack.add("Java");
 
   return Array.from(techStack).sort();
 }
@@ -336,17 +342,18 @@ function unavailableNote(file: ScannedFile, maxFileSizeKB: number): string {
   return "(no content)";
 }
 
-export function formatOutput(
+export async function formatOutput(
   files: ScannedFile[],
   options: FormatOptions,
-): {
+): Promise<{
   output: string;
   totalTokens: number;
   fileTokenStats: FileTokenStat[];
   dirTokenMap: DirectoryTokenMap;
   treeText: string;
-} {
+}> {
   const maxFileSizeKB = options.maxFileSizeKB ?? 100;
+  const countTokens = await getTokenCounter(options.encoding);
   const sortedFiles =
     options.sortMode === "given"
       ? [...files]
@@ -380,7 +387,7 @@ export function formatOutput(
   const { fileTokenStats, totalTokens } = computeFileTokenStats(
     sortedFiles,
     redactedByPath,
-    options.encoding,
+    countTokens,
   );
   const dirTokenMap = aggregateDirectoryTokens(fileTokenStats);
 
@@ -414,6 +421,9 @@ export function formatOutput(
   const headerText = headerLines.join("\n");
 
   if (options.format === "json") {
+    const tokensByPath = new Map(
+      fileTokenStats.map((s) => [s.path, s.tokens]),
+    );
     const payload = {
       metadata: {
         root: options.rootDir,
@@ -427,8 +437,7 @@ export function formatOutput(
       tree: treeText,
       files: sortedFiles.map((file) => ({
         path: file.path,
-        tokens:
-          fileTokenStats.find((s) => s.path === file.path)?.tokens ?? 0,
+        tokens: tokensByPath.get(file.path) ?? 0,
         binary: file.isBinary,
         oversized: file.isOversized,
         omitted: file.isOmitted ?? false,

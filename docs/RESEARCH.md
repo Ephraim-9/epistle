@@ -7,6 +7,32 @@
 
 ---
 
+## 0. Re-scan note (2026-07-08)
+
+The catalog in §1 is the original frozen snapshot. A re-scan of the fast
+movers found the following changes since it was written, and Epistle's
+response:
+
+- **Repomix (now ~1.16.0)** shipped: *watch mode*; *bare `owner/repo`
+  remote shorthand* (no `--remote` flag); `output.filePathStyle:
+  cwd-relative`; `--compress` made resilient (one unparseable file no
+  longer aborts the pack); and an **argument-injection fix** validating
+  refs / inserting `--end-of-options` before user-supplied refs in
+  `git fetch`/`checkout`.
+  → Epistle adopted the two that earn their weight: **`owner/repo`
+    shorthand** (v1.7.0) and the **argument-injection hardening**
+    (v1.7.0 — Epistle's remote clone and `--diff` ref were vulnerable to
+    the same class). Per-file compression resilience was already
+    Epistle's design (v1.6.0 AST engine falls back per file, never
+    aborts). Watch mode stays deliberately unbuilt (see §4 revision).
+- **code2prompt / gitingest** — no structural changes vs the snapshot;
+  both already had MCP servers, which Epistle matched in v1.4.0.
+- **Landscape trend**: MCP server mode is now table stakes (Epistle:
+  v1.4.0), and tools continue moving from "dump everything" to ranked
+  selection (Epistle: churn sort + priority-last ordering, since v0.6.0).
+
+---
+
 ## 1. Tool Catalog
 
 ### 1.1 Repomix (TypeScript / npm) — the category leader
@@ -190,6 +216,48 @@ The most feature-complete tool in the space. Key capabilities:
 > signature extractor achieves comparable reduction without native/wasm
 > install weight), and split-output (modern 200k+ windows and `--max-tokens`
 > cover the need).
+>
+> **Revision (2026-07-08, v1.4.0): the MCP decision above was reversed.**
+> The market moved: MCP is now how agentic tools (Claude Code, Cursor,
+> Windsurf) consume external capabilities live, and both Repomix and
+> code2prompt ship server modes. `epistle --mcp` now exposes
+> `pack_codebase` / `pack_remote` / `read_output` / `grep_output` over
+> stdio. The original daemon-lifecycle concern was answered by design:
+> packs are stored in temp files and addressed by ID, only bounded
+> summaries/chunks/grep results cross the protocol, and the server is a
+> thin layer over the same `packDirectory()` pipeline the CLI uses — no
+> watch loops, no state beyond the pack registry. Watch mode remains
+> unbuilt (an MCP client re-packs on demand, which covers the use case
+> with none of the file-watcher complexity).
+>
+> **Revision (2026-07-08, v1.6.0): tree-sitter compression shipped after
+> benchmarking.** Measured on facebook/react (4,435 JS/TS/PY files,
+> 4.16M tokens): line heuristic 81.3% reduction in 0.15s; AST 84.7% in
+> 6.7s with zero parse failures. The ratio gap is small, but the
+> *correctness* gap is not: the heuristic drops every parameter line of
+> multi-line signatures, decorator arguments, and return types — exactly
+> the content a skeleton exists to preserve (verified on crafted edge
+> cases; the AST output keeps all of them). Design: web-tree-sitter +
+> tree-sitter-wasms ship as **optionalDependencies** (~55MB), the same
+> `--compress` flag prefers the AST engine (TS/JS/TSX/JSX, Python, Go,
+> Rust) and falls back per-file to the heuristic for other languages —
+> or entirely when installed with `--omit=optional` (note: npm honors
+> that flag for local installs, not global ones). Grammar wasms are
+> ABI-tied to web-tree-sitter 0.20.x; the pins must move together.
+>
+> **Distribution decision (2026-07-08, v1.5.1):** the npm tarball is the
+> single supported channel, verified end-to-end (`npm pack` → global
+> install → pack/completions smoke test). Homebrew and Docker — which
+> Repomix ships — were evaluated and **deliberately skipped**:
+> - *Homebrew*: a formula (or tap) must be re-released for every
+>   version, and Epistle's audience already has Node — `npm i -g
+>   epistle` / `npx epistle` is strictly less friction than adding a
+>   brew dependency on the node keg. Revisit only if a standalone
+>   compiled binary (bun/pkg) ever ships for non-Node users.
+> - *Docker*: packing requires bind-mounting the target repo and
+>   fighting output-file uid/gid; every real use (local or CI) is
+>   served better by `npx epistle`. An image adds a registry, build
+>   pipeline, and version skew for zero reach.
 
 **v0.4.0 — Correctness + parity foundations**
 config file (`epistle.config.json` + `--init`), `.epistleignore`, nested
@@ -220,3 +288,41 @@ evaluation, remote repo ingest evaluation.
 
 **v1.0.0 — Docs & polish**
 README rewrite with comparison table, CHANGELOG, npm metadata, final QA.
+
+---
+
+## 5. Hardening cycle (2026-07-08, v1.1.0–v1.7.0)
+
+A second pass targeting real weaknesses rather than flag count:
+
+- **v1.1.0 — Performance.** Scanner parallelized (bounded 64-way,
+  single-read binary detection) and tokenizer swapped js-tiktoken →
+  gpt-tokenizer. facebook/react full pack **22.95s → 5.43s (4.2×)**,
+  byte-identical output; scan phase 5.1s → ~0.9s after v1.5.0.
+- **CI.** GitHub Actions: build + 70 tests on Node 18/20/22 (Linux) and
+  Node 22 (Windows, macOS). Previously zero automated enforcement.
+- **v1.2.0 — Config schema + validation.** `epistle.schema.json`
+  (bundled, wired into `--init` via `$schema`); load-time validation
+  with field-level errors and did-you-mean suggestions.
+- **v1.3.0 — Shell completions.** `epistle completion bash|zsh|fish`,
+  generated from the live option list; profiles/recipes complete
+  dynamically.
+- **v1.4.0 — MCP server.** `epistle --mcp` over stdio (pack_codebase,
+  pack_remote, read_output, grep_output). Reverses the v1.0.0 skip
+  decision (see §4 revision).
+- **v1.5.0 — Edge-case audit.** Gitignore negation cascade across nested
+  levels; symlink resolution fixed (was silently dropping symlinked
+  files) with cycle safety; monorepo tech-stack detection; Windows path
+  normalization.
+- **v1.5.1 — Distribution.** npm pack → global install verified
+  end-to-end; MIT LICENSE + metadata added; Homebrew/Docker evaluated
+  and declined (rationale in §4).
+- **v1.6.0 — Tree-sitter compression.** AST engine for TS/JS/Python/Go/
+  Rust behind `--compress`, heuristic fallback; 84.7% vs 81.3% on react
+  with correct multi-line signatures. Reverses the v1.0.0 skip (§4).
+- **v1.7.0 — Landscape re-scan.** `owner/repo` shorthand and git
+  argument-injection hardening adopted from Repomix's 2026 changes
+  (see §0).
+
+Still deliberately unbuilt: **watch mode** (an MCP client re-packs on
+demand) and **split-output** (200k+ windows + `--max-tokens` cover it).

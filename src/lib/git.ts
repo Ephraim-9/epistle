@@ -32,12 +32,22 @@ export async function cloneRemote(
   branch?: string,
 ): Promise<string> {
   const url = normalizeRemoteUrl(remote);
+  // Argument-injection hardening: a URL or ref beginning with "-" would
+  // otherwise be parsed by git as an option (e.g. --upload-pack=<cmd>
+  // executes commands). Same vulnerability class Repomix patched in 2026.
+  if (url.startsWith("-")) {
+    throw new Error(`Invalid remote URL "${remote}".`);
+  }
+  if (branch && (branch.startsWith("-") || branch.includes("\0"))) {
+    throw new Error(`Invalid branch name "${branch}".`);
+  }
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "epistle-remote-"));
   const args = ["clone", "--depth", "1", "--single-branch"];
   if (branch) {
     args.push("--branch", branch);
   }
-  args.push(url, dir);
+  // "--" stops option parsing before the positional URL/directory
+  args.push("--", url, dir);
   try {
     await execFileAsync("git", args, { maxBuffer: 32 * 1024 * 1024 });
   } catch (err) {
@@ -78,7 +88,12 @@ export async function getChangedFiles(
   rootDir: string,
   ref = "HEAD",
 ): Promise<string[] | undefined> {
-  const diff = await git(rootDir, ["diff", "--name-only", ref]);
+  // A ref beginning with "-" would be parsed as a git-diff option
+  // (e.g. --output=<path> writes files); reject instead of executing.
+  if (ref.startsWith("-") || ref.includes("\0")) {
+    return undefined;
+  }
+  const diff = await git(rootDir, ["diff", "--name-only", ref, "--"]);
   if (diff === undefined) return undefined;
   const untracked = await git(rootDir, [
     "ls-files",
