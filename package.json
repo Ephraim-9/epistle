@@ -4,6 +4,7 @@
   "description": "Epistle – a production-grade Node.js CLI that packs a local codebase into a single, LLM-friendly context file.",
   "private": false,
   "license": "MIT",
+  "author": "Ephraim Arshad <ephraimhrm@gmail.com> (https://github.com/Ephraim-9)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Ephraim-9/epistle.git"

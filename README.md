@@ -1,5 +1,10 @@
 # Epistle 📜
 
+[![npm](https://img.shields.io/npm/v/epistle?logo=npm&color=cb3837)](https://www.npmjs.com/package/epistle)
+[![CI](https://github.com/Ephraim-9/epistle/actions/workflows/ci.yml/badge.svg)](https://github.com/Ephraim-9/epistle/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/epistle?color=blue)](./LICENSE)
+[![node](https://img.shields.io/node/v/epistle)](https://nodejs.org)
+
 **Pack a codebase into a single, LLM-friendly context file — with compression, token budgets, git awareness, and secret redaction built in.**
 
 Epistle scans a project (or a remote repo), filters out noise, redacts
