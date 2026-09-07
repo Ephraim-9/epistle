@@ -40,7 +40,8 @@ the best ideas from the whole field — and adds a few of its own:
 | MCP server mode (`--mcp`) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Shell completions | ✅ bash/zsh/fish | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Personas + prompt recipes | ✅ | ❌ | templates | ❌ | ❌ | ❌ |
-| Config profiles + JSON Schema | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Named config profiles (`--profile`) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Config file JSON Schema | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | stdin file lists (`find … | epistle --stdin`) | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 
 *(See [docs/RESEARCH.md](docs/RESEARCH.md) for the full competitive analysis.)*
@@ -70,7 +71,7 @@ epistle --compress -o ctx.md          # keep signatures, elide bodies (~80% smal
 epistle --remove-comments --remove-empty-lines -o ctx.md
 epistle --max-tokens 100000 -o ctx.md # drop heaviest files until it fits
 epistle --lite -o ctx.md              # prune styles, images, data files
-epistle --fit                         # bar chart: % of Claude/GPT/Gemini windows used
+epistle --fit                         # bar chart: % of Claude/GPT/Gemini windows used (estimated)
 epistle --hog-depth auto              # find your token hogs
 ```
 
@@ -80,9 +81,9 @@ are always listed but never inlined.
 `--compress` uses **real parse trees** (tree-sitter) for TypeScript, JSX,
 Python, Go, and Rust, so multi-line signatures, decorators, and return
 types survive intact. Other languages fall back to a fast line-based
-heuristic. The tree-sitter grammars are an *optional dependency* — install
-with `npm i -g epistle --omit=optional` to skip the ~55MB download and the
-heuristic covers everything.
+heuristic. The tree-sitter grammars are an *optional dependency* (~55MB) —
+if omitted or installed without optional dependencies, Epistle seamlessly
+falls back to the fast line-based heuristic for all languages without error.
 
 ## Git awareness
 

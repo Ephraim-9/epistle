@@ -914,7 +914,7 @@ Shell completions:
 
     if (opts.fit) {
       info("");
-      info(chalk.cyan("Context Window Fit"));
+      info(chalk.cyan("Context Window Fit (Estimated)"));
       for (const line of renderFitReport(totalTokens)) {
         info(line);
       }
