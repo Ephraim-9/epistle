@@ -3,6 +3,13 @@
 All notable changes to Epistle are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.7.1] - 2026-09-26
+
+### Fixed
+- **Security:** default ignores (`.git/`, `node_modules/`, `dist/`, lockfiles, …) were anchored to the
+  root, so `epistle <subdir>` packed `<subdir>/.git/` (including `.git/config`) and nested
+  `node_modules`/`dist`. They now match at any depth.
+
 ## [1.7.0] - 2026-07-08
 
 ### Added
