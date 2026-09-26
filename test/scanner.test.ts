@@ -208,3 +208,22 @@ test("lockfiles and node_modules are excluded by default", async (t) => {
   const paths = files.map((f) => f.path);
   assert.deepEqual(paths, ["index.js"]);
 });
+
+test("default ignores apply at any depth, including under a scan path", async (t) => {
+  const dir = await makeFixture({
+    "proj/a.ts": "export const a = 1",
+    "proj/.git/config": "[remote]\nurl = https://user:token@example.com/r.git",
+    "proj/.git/HEAD": "ref: refs/heads/main",
+    "proj/.env": "SECRET=1",
+    "pkgs/web/node_modules/x/index.js": "x",
+    "pkgs/web/dist/out.js": "x",
+    "pkgs/web/src.ts": "y",
+  });
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  for (const scanPaths of [undefined, ["proj", "pkgs"]]) {
+    const { files } = await scanProject({ rootDir: dir, scanPaths });
+    const paths = files.map((f) => f.path).sort();
+    assert.deepEqual(paths, ["pkgs/web/src.ts", "proj/a.ts"]);
+  }
+});
